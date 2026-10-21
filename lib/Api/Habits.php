@@ -14,17 +14,74 @@ class Habits
         Storage::touchBindingByUid($uid);
 
         $h = Storage::getHabits($uid);
-        return ['RESULT' => 'OK', 'HABITS' => empty($h) ? (object)[] : $h];
+
+        return [
+            'RESULT'         => 'OK',
+            'HABITS'         => empty($h) ? (object)[] : $h,
+            'SELECTED_HABIT' => Storage::getSelectedHabit($uid),
+        ];
+    }
+
+    /**
+     * POST /habits/select
+     * Body: { ID_USER, HABIT_ID }
+     * Ответ:
+     *   OK               — привычка выбрана впервые (или повторно тот же id)
+     *   ALREADY_SELECTED — уже выбрана другая привычка, менять нельзя
+     */
+    public static function select(array $b): array
+    {
+        $uid     = trim((string)($b['ID_USER']  ?? ''));
+        $habitId = trim((string)($b['HABIT_ID'] ?? ''));
+
+        if ($uid === '' || $habitId === '') {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER and HABIT_ID required'];
+        }
+        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid ID_USER'];
+        }
+
+        if (Storage::isBlocked($uid)) {
+            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+
+        // Проверяем, что привычка есть в справочнике
+        $exists = false;
+        foreach (HabitsBuilder::getAll() as $h) {
+            if ((string)$h['id'] === $habitId) { $exists = true; break; }
+        }
+        if (!$exists) {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Unknown habit'];
+        }
+
+        $result = Storage::selectHabit($uid, $habitId);
+
+        if (!$result['ok']) {
+            if ($result['reason'] === 'ALREADY_SELECTED') {
+                return [
+                    'RESULT'      => 'ALREADY_SELECTED',
+                    'MESSAGE'     => 'Привычка уже выбрана. Изменить нельзя.',
+                    'HABIT_ID'    => $result['habitId'],
+                    'SELECTED_AT' => $result['selectedAt'],
+                ];
+            }
+            if ($result['reason'] === 'UID_NOT_FOUND') {
+                return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+            }
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Не удалось сохранить привычку.'];
+        }
+
+        Storage::touchBindingByUid($uid);
+
+        return [
+            'RESULT'      => 'OK',
+            'HABIT_ID'    => $result['habitId'],
+            'SELECTED_AT' => $result['selectedAt'],
+        ];
     }
 
     /**
      * Отметка выполнения привычки.
-     *
-     * Контроль перевыполнения:
-     *   • doneToday считается по ЛОКАЛЬНОЙ дате пользователя;
-     *   • если doneToday >= timesPerDay — запись не создаётся;
-     *   • ответ: RESULT = 'LIMIT_REACHED' + doneToday, timesPerDay, lastDoneAt;
-     *   • при успехе: RESULT = 'OK', doneToday (после записи), canComplete (false если лимит).
      */
     public static function complete(array $b): array
     {
@@ -52,11 +109,10 @@ class Habits
             break;
         }
         if ($timesPerDay === null) {
-            // Неизвестная привычка — не блокируем, но и не пишем
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'Unknown habit'];
         }
 
-        // ─── Сколько раз уже выполнено сегодня (в локальной дате) ───
+        // ─── Сколько раз уже выполнено сегодня ───
         $logs = Storage::getHabits($uid);
         $completionsToday = 0;
         $latestServerMs   = 0;
@@ -78,7 +134,6 @@ class Habits
             $lastDoneAt = date('Y-m-d\TH:i:sP', (int)($latestServerMs / 1000));
         }
 
-        // ─── Лимит уже достигнут — отказ ───
         if ($completionsToday >= $timesPerDay) {
             \Bitrix\Main\Diag\Debug::writeToFile(
                 sprintf(
@@ -91,17 +146,16 @@ class Habits
             );
 
             return [
-                'RESULT'      => 'LIMIT_REACHED',
-                'MESSAGE'     => 'На сегодня норма выполнения привычки исчерпана.',
-                'HABIT_ID'    => $id,
-                'DONE_TODAY'  => $completionsToday,
+                'RESULT'        => 'LIMIT_REACHED',
+                'MESSAGE'       => 'На сегодня норма выполнения привычки исчерпана.',
+                'HABIT_ID'      => $id,
+                'DONE_TODAY'    => $completionsToday,
                 'TIMES_PER_DAY' => $timesPerDay,
-                'LAST_DONE_AT' => $lastDoneAt,
-                'CAN_COMPLETE' => false,
+                'LAST_DONE_AT'  => $lastDoneAt,
+                'CAN_COMPLETE'  => false,
             ];
         }
 
-        // ─── Записываем ───
         $t = Storage::addHabit($uid, $id);
         Storage::setLastNotified($uid, $id);
         Storage::touchBindingByUid($uid);

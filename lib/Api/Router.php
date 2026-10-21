@@ -56,6 +56,13 @@ class Router
         if ($path === '/state'          && $method === 'POST') return [State::save($body), 200];
         if ($path === '/profile'        && $method === 'POST') return [Profile::save($body), 200];
 
+        // ─── Согласие на обработку ПД ───
+        if ($path === '/consent/send'   && $method === 'POST') return [Consent::send($body), 200];
+        if ($path === '/consent/status' && $method === 'POST') return [Consent::status($body), 200];
+
+        // ─── Выбор привычки (одна, без смены) ───
+        if ($path === '/habits/select'  && $method === 'POST') return [Habits::select($body), 200];
+
         // ─── Завершение элементов ───
         if ($path === '/lecture/read'   && $method === 'POST') return [Reads::add($body), 200];
         if ($path === '/task/complete'  && $method === 'POST') return [Tasks::complete($body), 200];

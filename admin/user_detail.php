@@ -27,6 +27,18 @@ if (!$binding) {
 $stats = \X5\Pwa\StatsBuilder::buildUser($uid);
 $sub   = \X5\Pwa\Storage::getSubscription($uid);
 
+// Название выбранной привычки
+$selectedHabit      = $stats['SELECTED_HABIT'] ?? null;
+$selectedHabitTitle = null;
+if ($selectedHabit) {
+    foreach (\X5\Pwa\HabitsBuilder::getAll() as $h) {
+        if ((string)$h['id'] === (string)$selectedHabit) {
+            $selectedHabitTitle = (string)$h['title'];
+            break;
+        }
+    }
+}
+
 $APPLICATION->SetTitle('PWA — Пользователь ' . substr($uid, 0, 12) . '…');
 
 function fmt_ms(int $ms): string
@@ -34,6 +46,19 @@ function fmt_ms(int $ms): string
     if ($ms <= 0) return '—';
     return date('d.m.Y H:i:s', (int)($ms / 1000));
 }
+
+function fmt_iso(?string $iso): string
+{
+    if (!$iso) return '—';
+    try {
+        $dt = new \DateTime($iso);
+        return $dt->format('d.m.Y H:i:s P');
+    } catch (\Throwable $e) {
+        return htmlspecialcharsbx($iso);
+    }
+}
+
+$steps = $stats['STEPS'] ?? [];
 ?>
 <?php require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php'; ?>
 
@@ -44,14 +69,23 @@ function fmt_ms(int $ms): string
     .x5pwa-kv dt { color: #666; }
     .x5pwa-kv dd { margin: 0; font-weight: 500; }
     .x5pwa-mono { font-family: monospace; font-size: 12px; word-break: break-all; }
-    .x5pwa-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .x5pwa-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
     .x5pwa-metric { background: #f5f6f8; padding: 12px; border-radius: 6px; text-align: center; }
-    .x5pwa-metric-value { font-size: 24px; font-weight: 600; color: #2c3e50; }
+    .x5pwa-metric-value { font-size: 22px; font-weight: 600; color: #2c3e50; }
     .x5pwa-metric-label { font-size: 11px; color: #666; text-transform: uppercase; margin-top: 4px; }
     .x5pwa-week { display: flex; gap: 6px; }
     .x5pwa-week-day { flex: 1; background: #f0f2f5; padding: 8px 4px; text-align: center; border-radius: 4px; font-size: 11px; }
     .x5pwa-week-day.has-activity { background: #d4edaa; }
     .x5pwa-week-count { font-size: 16px; font-weight: 600; }
+    .x5pwa-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; }
+    .x5pwa-badge-yes { background: #e6f5d8; color: #3a7d1c; }
+    .x5pwa-badge-no  { background: #f5e0e0; color: #a52020; }
+    .x5pwa-badge-none{ background: #f0f2f5; color: #666; }
+    .x5pwa-badge-theme { background: #e0efff; color: #1e6bcc; }
+    .x5pwa-table { width: 100%; border-collapse: collapse; }
+    .x5pwa-table td { padding: 6px 12px; border-bottom: 1px solid #eee; }
+    .x5pwa-table td:first-child { width: 40%; }
+    .x5pwa-table td:last-child { text-align: right; }
 </style>
 
 <div style="margin-bottom:12px">
@@ -84,25 +118,107 @@ function fmt_ms(int $ms): string
 </div>
 
 <div class="x5pwa-box">
+    <h3>Согласие на обработку ПД и выбор привычки</h3>
+    <dl class="x5pwa-kv">
+        <dt>Согласие ПД</dt>
+        <dd>
+            <?php if (!$stats['HAS_CONSENT']): ?>
+                <span class="x5pwa-badge x5pwa-badge-none">не дано</span>
+            <?php elseif ($stats['CONSENT']): ?>
+                <span class="x5pwa-badge x5pwa-badge-yes">дано</span>
+            <?php else: ?>
+                <span class="x5pwa-badge x5pwa-badge-no">отказ</span>
+            <?php endif ?>
+        </dd>
+        <dt>Дата/время согласия (сервер)</dt>
+        <dd><?= fmt_iso($stats['CONSENT_AT']) ?></dd>
+        <dt>Дата/время согласия (клиент)</dt>
+        <dd class="x5pwa-mono"><?= htmlspecialcharsbx((string)($stats['CONSENT_LOCAL_DT'] ?? '—')) ?></dd>
+
+        <dt>Выбранная привычка</dt>
+        <dd>
+            <?php if ($selectedHabit): ?>
+                <b><?= htmlspecialcharsbx($selectedHabitTitle ?: $selectedHabit) ?></b>
+                <?php if ($selectedHabitTitle && $selectedHabitTitle !== $selectedHabit): ?>
+                    <span class="x5pwa-mono" style="color:#888">(<?= htmlspecialcharsbx($selectedHabit) ?>)</span>
+                <?php endif ?>
+            <?php else: ?>
+                <span class="x5pwa-badge x5pwa-badge-none">не выбрана</span>
+            <?php endif ?>
+        </dd>
+        <dt>Дата выбора привычки</dt>
+        <dd><?= fmt_iso(!empty($binding['UF_HABIT_SELECTED_AT'])
+                ? $binding['UF_HABIT_SELECTED_AT']->format('Y-m-d\TH:i:sP')
+                : null) ?></dd>
+    </dl>
+</div>
+
+<div class="x5pwa-box">
     <h3>Итоги</h3>
     <div class="x5pwa-grid">
         <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $stats['LECTURES_READ'] ?></div>
-            <div class="x5pwa-metric-label">Лекций прочитано</div>
+            <div class="x5pwa-metric-value"><?= (int)$stats['LECTURES_READ'] ?></div>
+            <div class="x5pwa-metric-label">Лекций прочитано<br><small>всего</small></div>
         </div>
         <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $stats['TASKS_DONE'] ?></div>
+            <div class="x5pwa-metric-value"><?= (int)$stats['LECTURES_THEME'] ?></div>
+            <div class="x5pwa-metric-label">Лекций по направлениям</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= (int)$stats['LECTURES_GENERAL'] ?></div>
+            <div class="x5pwa-metric-label">Общих лекций</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= (int)$stats['CHARGINGS_DONE'] ?></div>
+            <div class="x5pwa-metric-label">Зарядок</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= (int)$stats['TASKS_DONE'] ?></div>
             <div class="x5pwa-metric-label">Заданий выполнено</div>
         </div>
         <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $stats['HABITS_DONE'] ?></div>
+            <div class="x5pwa-metric-value"><?= (int)$stats['HABITS_DONE'] ?></div>
             <div class="x5pwa-metric-label">Привычек отмечено</div>
         </div>
         <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $stats['STREAK'] ?></div>
+            <div class="x5pwa-metric-value"><?= (int)$stats['STREAK'] ?></div>
             <div class="x5pwa-metric-label">Дней подряд</div>
         </div>
     </div>
+</div>
+
+<div class="x5pwa-box">
+    <h3>ШАГИ</h3>
+    <?php if (empty($steps)): ?>
+        <div style="color:#888">Нет данных шагомера.</div>
+    <?php else: ?>
+        <div class="x5pwa-grid">
+            <div class="x5pwa-metric">
+                <div class="x5pwa-metric-value"><?= number_format((int)($steps['TOTAL_STEPS'] ?? 0), 0, '', ' ') ?></div>
+                <div class="x5pwa-metric-label">Всего шагов<br><small>одобрено</small></div>
+            </div>
+            <div class="x5pwa-metric">
+                <div class="x5pwa-metric-value"><?= number_format((int)($steps['TODAY_STEPS'] ?? 0), 0, '', ' ') ?></div>
+                <div class="x5pwa-metric-label">Сегодня</div>
+            </div>
+            <div class="x5pwa-metric">
+                <div class="x5pwa-metric-value"><?= number_format((int)($steps['DAILY_AVG'] ?? 0), 0, '', ' ') ?></div>
+                <div class="x5pwa-metric-label">В среднем / день</div>
+            </div>
+            <div class="x5pwa-metric">
+                <div class="x5pwa-metric-value"><?= (int)($steps['RANK'] ?? 0) ?></div>
+                <div class="x5pwa-metric-label">Место в рейтинге<br><small>из <?= (int)($steps['TOTAL_USERS'] ?? 0) ?></small></div>
+            </div>
+            <div class="x5pwa-metric">
+                <div class="x5pwa-metric-value"><?= (int)($steps['TOP_PERCENT'] ?? 0) ?>%</div>
+                <div class="x5pwa-metric-label">Топ-%</div>
+            </div>
+            <div class="x5pwa-metric">
+                <div class="x5pwa-metric-value"><?= number_format((int)($steps['GOAL'] ?? 0), 0, '', ' ') ?></div>
+                <div class="x5pwa-metric-label">Цель</div>
+            </div>
+        </div>
+    <?php endif ?>
 </div>
 
 <div class="x5pwa-box">
@@ -117,32 +233,63 @@ function fmt_ms(int $ms): string
     </div>
 </div>
 
+<?php
+// Направления: показываем только реальные (без general/charging/unknown с 0)
+$themeTitles = $stats['THEME_TITLES'] ?? [];
+$themeRows = [];
+foreach ($stats['BY_THEME'] as $code => $count) {
+    if (in_array($code, ['general', 'charging'], true)) continue;
+    if ((int)$count <= 0) continue;
+    $title = $themeTitles[$code] ?? ($code === 'unknown' ? 'Не определено' : $code);
+    $themeRows[$title] = (int)$count;
+}
+?>
+
 <div class="x5pwa-box">
-    <h3>Разбивка по темам</h3>
-    <table style="width:100%;border-collapse:collapse">
-        <?php foreach ($stats['BY_THEME'] as $theme => $count): ?>
-            <tr>
-                <td style="padding:6px 12px;border-bottom:1px solid #eee;width:200px"><?= htmlspecialcharsbx($theme) ?></td>
-                <td style="padding:6px 12px;border-bottom:1px solid #eee"><b><?= (int)$count ?></b></td>
-            </tr>
-        <?php endforeach ?>
-    </table>
+    <h3>Разбивка по направлениям</h3>
+    <?php if (!$themeRows): ?>
+        <div style="color:#888">Нет прочитанных лекций по направлениям.</div>
+    <?php else: ?>
+        <table class="x5pwa-table">
+            <?php foreach ($themeRows as $title => $count): ?>
+                <tr>
+                    <td><?= htmlspecialcharsbx((string)$title) ?></td>
+                    <td><b><?= $count ?></b></td>
+                </tr>
+            <?php endforeach ?>
+        </table>
+    <?php endif ?>
 </div>
+
+<?php
+// Привычки: показываем только те, что реально выполнялись
+$habitTitles = $stats['HABIT_TITLES'] ?? [];
+$habitRows = [];
+foreach ($stats['BY_HABIT'] as $id => $count) {
+    if ((int)$count <= 0) continue;
+    $title = $habitTitles[$id] ?? (string)$id;
+    $habitRows[$title] = (int)$count;
+}
+?>
 
 <div class="x5pwa-box">
     <h3>Привычки</h3>
-    <table style="width:100%;border-collapse:collapse">
-        <?php foreach ($stats['BY_HABIT'] as $habitId => $count): ?>
-            <tr>
-                <td style="padding:6px 12px;border-bottom:1px solid #eee;width:200px"><?= htmlspecialcharsbx($habitId) ?></td>
-                <td style="padding:6px 12px;border-bottom:1px solid #eee"><b><?= (int)$count ?></b></td>
-            </tr>
-        <?php endforeach ?>
-    </table>
+    <?php if (!$habitRows): ?>
+        <div style="color:#888">Нет выполненных привычек.</div>
+    <?php else: ?>
+        <table class="x5pwa-table">
+            <?php foreach ($habitRows as $title => $count): ?>
+                <tr>
+                    <td><?= htmlspecialcharsbx((string)$title) ?></td>
+                    <td><b><?= $count ?></b></td>
+                </tr>
+            <?php endforeach ?>
+        </table>
+    <?php endif ?>
 </div>
 
 <div class="x5pwa-box">
-    <h3>Прочитанные лекции</h3>
+    <h3>Прочитанные лекции и зарядки</h3>
     <?php if (!$stats['READS']): ?>
         <div style="color:#888">Нет записей.</div>
     <?php else: ?>

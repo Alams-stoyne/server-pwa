@@ -52,6 +52,7 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\Api\\Today'      => 'lib/Api/Today.php',
     'X5\\Pwa\\Api\\Reflection' => 'lib/Api/Reflection.php',
     'X5\\Pwa\\Api\\Steps'      => 'lib/Api/Steps.php',
+    'X5\\Pwa\\Api\\Consent'    => 'lib/Api/Consent.php',
 ]);
 
 if (ModuleManager::isModuleInstalled('x5.pwa')) {

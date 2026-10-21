@@ -5,6 +5,7 @@ use Bitrix\Main\Entity\ExpressionField;
 use Bitrix\Main\Loader;
 
 Loader::includeModule('highloadblock');
+Loader::includeModule('iblock');
 
 class StatsBuilder
 {
@@ -30,17 +31,46 @@ class StatsBuilder
         $taskKeys  = Storage::getTasks($uid);
         $habitData = Storage::getHabits($uid);
 
-        $themes = ['energy', 'antistress', 'body', 'balance', 'general', 'charging'];
-        $byTheme = array_fill_keys($themes, 0);
-        $activeCounts = [];
+        // ─── Резолвим настоящие направления и бакеты лекций ───
+        $buckets    = self::resolveLectureBuckets($reads);
+        $themeCodes = ThemesResolver::getAllCodes();
+        if (!$themeCodes) $themeCodes = ['energy', 'antistress', 'body', 'balance'];
+
+        $byTheme = array_fill_keys($themeCodes, 0);
+        $byTheme['general']  = 0;
+        $byTheme['charging'] = 0;
+        $byTheme['unknown']  = 0;
+
+        $lecturesGeneral = 0;
+        $chargingsDone   = 0;
+        $activeCounts    = [];
 
         foreach ($reads as $dbKey) {
-            if (preg_match('#^lecture-([a-z0-9_-]+):(\d{4}-\d{2}-\d{2}):#', (string)$dbKey, $m)) {
-                $theme = $m[1];
-                if (array_key_exists($theme, $byTheme)) $byTheme[$theme]++;
-                $activeCounts[$m[2]] = ($activeCounts[$m[2]] ?? 0) + 1;
+            $dbKey  = (string)$dbKey;
+            $bucket = $buckets[$dbKey] ?? 'unknown';
+
+            if ($bucket === 'general') {
+                $lecturesGeneral++;
+                $byTheme['general']++;
+            } elseif ($bucket === 'charging') {
+                $chargingsDone++;
+                $byTheme['charging']++;
+            } elseif (strpos($bucket, 'theme:') === 0) {
+                $code = substr($bucket, 6);
+                if (!array_key_exists($code, $byTheme)) $byTheme[$code] = 0;
+                $byTheme[$code]++;
+            } else {
+                $byTheme['unknown']++;
+            }
+
+            // Активность по датам — поддерживаем оба формата
+            if (preg_match('/-(\d{4}-\d{2}-\d{2})$/', $dbKey, $m)) {
+                $activeCounts[$m[1]] = ($activeCounts[$m[1]] ?? 0) + 1;
+            } elseif (preg_match('#:(\d{4}-\d{2}-\d{2}):#', $dbKey, $m)) {
+                $activeCounts[$m[1]] = ($activeCounts[$m[1]] ?? 0) + 1;
             }
         }
+
         foreach ($taskKeys as $k) {
             $d = explode(':', (string)$k, 2)[0];
             if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
@@ -48,18 +78,35 @@ class StatsBuilder
             }
         }
 
+        // ─── Привычки: реальный список из IB ───
+        $allHabits    = HabitsBuilder::getAll();
+        $habitTitles  = [];
+        $byHabit      = [];
+        foreach ($allHabits as $h) {
+            $habitTitles[(string)$h['id']] = (string)$h['title'];
+            $byHabit[(string)$h['id']] = 0;
+        }
+
         $habitsTotal = 0;
-        $byHabit = ['water' => 0, 'workout' => 0, 'eyes' => 0];
         foreach ($habitData as $habitId => $list) {
             if (!is_array($list)) continue;
-            $habitsTotal += count($list);
-            if (array_key_exists($habitId, $byHabit)) $byHabit[$habitId] += count($list);
+            $habitId = (string)$habitId;
+            $cnt     = count($list);
+            $habitsTotal += $cnt;
+
+            if (!array_key_exists($habitId, $byHabit)) {
+                $byHabit[$habitId] = 0;
+                if (!isset($habitTitles[$habitId])) $habitTitles[$habitId] = $habitId;
+            }
+            $byHabit[$habitId] += $cnt;
+
             foreach ($list as $iso) {
                 $d = substr((string)$iso, 0, 10);
                 $activeCounts[$d] = ($activeCounts[$d] ?? 0) + 1;
             }
         }
 
+        // ─── Streak ───
         $streak = 0;
         $cursor = new \DateTime('now', new \DateTimeZone('UTC'));
         $guard  = 0;
@@ -68,27 +115,162 @@ class StatsBuilder
             $cursor->modify('-1 day');
         }
 
+        // ─── Week ───
         $week = [];
         for ($i = 6; $i >= 0; $i--) {
             $d = new \DateTime('now', new \DateTimeZone('UTC'));
-            $d->modify("-$i day");
+            $d->modify("-$i days");
             $date = $d->format('Y-m-d');
             $week[] = ['date' => $date, 'count' => $activeCounts[$date] ?? 0];
         }
 
+        // ─── Названия направлений ───
+        $themeTitles = [];
+        foreach (ThemesBuilder::getAll() as $t) {
+            $themeTitles[(string)$t['id']] = (string)$t['name'];
+        }
+
+        // ─── Шаги ───
+        $stepsSummary = [];
+        try {
+            $stepsSummary = StepsBuilder::getSummary($uid);
+        } catch (\Throwable $e) {
+            $stepsSummary = [];
+        }
+
+        // ─── Согласие и выбранная привычка ───
+        $consent       = Storage::getConsent($uid);
+        $selectedHabit = Storage::getSelectedHabit($uid);
+
         return [
-            'LECTURES_READ' => count($reads),
-            'TASKS_DONE'    => count($taskKeys),
-            'HABITS_DONE'   => $habitsTotal,
-            'DAYS_ACTIVE'   => count($activeCounts),
-            'STREAK'        => $streak,
-            'BY_THEME'      => $byTheme,
-            'BY_HABIT'      => $byHabit,
-            'WEEK_ACTIVITY' => $week,
-            'READS'         => array_values($reads),
-            'TASKS'         => array_values($taskKeys),
-            'HABITS'        => $habitData,
+            'LECTURES_READ'    => count($reads),
+            'LECTURES_THEME'   => max(0, count($reads) - $lecturesGeneral - $chargingsDone),
+            'LECTURES_GENERAL' => $lecturesGeneral,
+            'CHARGINGS_DONE'   => $chargingsDone,
+            'TASKS_DONE'       => count($taskKeys),
+            'HABITS_DONE'      => $habitsTotal,
+            'DAYS_ACTIVE'      => count($activeCounts),
+            'STREAK'           => $streak,
+            'BY_THEME'         => $byTheme,
+            'THEME_TITLES'     => $themeTitles,
+            'BY_HABIT'         => $byHabit,
+            'HABIT_TITLES'     => $habitTitles,
+            'WEEK_ACTIVITY'    => $week,
+            'READS'            => array_values($reads),
+            'TASKS'            => array_values($taskKeys),
+            'HABITS'           => $habitData,
+            'STEPS'            => $stepsSummary,
+
+            // Плоские поля для удобства
+            'CONSENT'          => $consent['granted'],
+            'CONSENT_AT'       => $consent['serverAt'],
+            'CONSENT_LOCAL_DT' => $consent['localDt'],
+            'HAS_CONSENT'      => $consent['hasConsent'],
+            'SELECTED_HABIT'   => $selectedHabit,
         ];
+    }
+
+    /**
+     * Преобразует массив UF_LECTURE_ID → карту {key → bucket}.
+     *
+     * bucket:
+     *   'general'          — общая лекция
+     *   'charging'         — зарядка
+     *   'theme:{code}'     — лекция по направлению
+     *   'unknown'          — не удалось определить
+     *
+     * Поддерживает два формата ключей:
+     *   • новый:   {elementId}-{YYYY-MM-DD}
+     *   • legacy:  lecture-{theme}:{YYYY-MM-DD}:{suffix}
+     */
+    public static function resolveLectureBuckets(array $reads): array
+    {
+        $result = [];
+
+        // legacy — без запросов
+        $lookupIds = [];
+        foreach ($reads as $r) {
+            $r = (string)$r;
+            if (preg_match('/^(\d+)-(\d{4}-\d{2}-\d{2})$/', $r, $m)) {
+                $lookupIds[(int)$m[1]] = true;
+            } elseif (preg_match('#^lecture-([a-z0-9_-]+):#i', $r, $m)) {
+                $legacy = strtolower($m[1]);
+                if ($legacy === 'general') {
+                    $result[$r] = 'general';
+                } elseif ($legacy === 'charging') {
+                    $result[$r] = 'charging';
+                } else {
+                    $result[$r] = 'theme:' . $legacy;
+                }
+            } else {
+                $result[$r] = 'unknown';
+            }
+        }
+
+        if (!$lookupIds) return $result;
+
+        $found           = []; // elementId → 'general'|'charging'|'theme'
+        $themeByElement  = []; // elementId → code
+        $ids             = array_keys($lookupIds);
+
+        $ibGeneral  = (int)Settings::iblockId('general_lectures');
+        $ibCharging = (int)Settings::iblockId('charging');
+        $ibTheme    = (int)Settings::iblockId('theme_lectures');
+
+        foreach ([
+            'general'  => $ibGeneral,
+            'charging' => $ibCharging,
+        ] as $bucket => $ibId) {
+            if ($ibId <= 0) continue;
+            $rs = \CIBlockElement::GetList(
+                [],
+                ['ID' => $ids, 'IBLOCK_ID' => $ibId, 'CHECK_PERMISSIONS' => 'N'],
+                false, false,
+                ['ID']
+            );
+            while ($el = $rs->Fetch()) {
+                $found[(int)$el['ID']] = $bucket;
+            }
+        }
+
+        if ($ibTheme > 0) {
+            $themeElements = [];
+            $rs = \CIBlockElement::GetList(
+                [],
+                ['ID' => $ids, 'IBLOCK_ID' => $ibTheme, 'CHECK_PERMISSIONS' => 'N'],
+                false, false,
+                ['ID']
+            );
+            while ($el = $rs->Fetch()) {
+                $elId = (int)$el['ID'];
+                $themeElements[$elId] = true;
+                $found[$elId] = 'theme';
+            }
+
+            foreach (array_keys($themeElements) as $elId) {
+                $val = '';
+                $props = \CIBlockElement::GetProperty($ibTheme, $elId, [], ['CODE' => 'THEME']);
+                if ($p = $props->Fetch()) {
+                    $val = (string)($p['VALUE'] ?? '');
+                }
+                $code = ThemesResolver::resolve($val);
+                $themeByElement[$elId] = $code ?: 'unknown';
+            }
+        }
+
+        foreach ($reads as $r) {
+            $r = (string)$r;
+            if (!preg_match('/^(\d+)-(\d{4}-\d{2}-\d{2})$/', $r, $m)) continue;
+            $elId   = (int)$m[1];
+            $bucket = $found[$elId] ?? 'unknown';
+            if ($bucket === 'theme') {
+                $result[$r] = 'theme:' . ($themeByElement[$elId] ?? 'unknown');
+            } else {
+                $result[$r] = $bucket;
+            }
+        }
+
+        return $result;
     }
 
     // ───────── Users list ─────────
@@ -127,7 +309,6 @@ class StatsBuilder
                 ? $b['UF_LAST_SEEN_AT']->getTimestamp() * 1000
                 : 0;
 
-            // Активность = максимум из «последнего визита» и дат действий
             $lastActive = $lastSeen;
             if (isset($activity[$uid]) && $activity[$uid] > $lastActive) {
                 $lastActive = $activity[$uid];
@@ -212,16 +393,20 @@ class StatsBuilder
 
     private static function findTopTheme(): string
     {
-        $dc = Storage::dataClass('X5PwaLectureReads');
+        $dc   = Storage::dataClass('X5PwaLectureReads');
         $rows = $dc::getList(['select' => ['UF_LECTURE_ID']])->fetchAll();
 
+        $ids     = array_column($rows, 'UF_LECTURE_ID');
+        $buckets = self::resolveLectureBuckets($ids);
+
         $byTheme = [];
-        foreach ($rows as $r) {
-            if (preg_match('#^lecture-([a-z0-9_-]+):#i', (string)($r['UF_LECTURE_ID'] ?? ''), $m)) {
-                $t = strtolower($m[1]);
-                $byTheme[$t] = ($byTheme[$t] ?? 0) + 1;
-            }
+        foreach ($buckets as $bucket) {
+            if (strpos($bucket, 'theme:') !== 0) continue;
+            $t = substr($bucket, 6);
+            if ($t === 'unknown' || $t === '') continue;
+            $byTheme[$t] = ($byTheme[$t] ?? 0) + 1;
         }
+
         if (!$byTheme) return 'energy';
         arsort($byTheme);
         return (string)array_key_first($byTheme);

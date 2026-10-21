@@ -228,6 +228,9 @@ class Storage
             'X5PwaNotifLog'        => 'UF_UID',
             'X5PwaPushSubs'        => 'UF_UID',
             'X5PwaUserStates'      => 'UF_UID',
+            'X5PwaReflections'     => 'UF_UID',
+            'X5PwaSteps'           => 'UF_UID',
+            'X5PwaConsentLog'      => 'UF_UID',
             'X5PwaUidBindings'     => 'UF_UID',
         ];
 
@@ -885,5 +888,178 @@ class Storage
         $value = json_encode(array_values($timestamps));
         if ($row) $dc::update($row['ID'], ['UF_TIMESTAMPS' => $value]);
         else $dc::add(['UF_KEY' => $key, 'UF_TIMESTAMPS' => $value]);
+    }
+
+    // ───────── Consent (Согласие на обработку ПД) ─────────
+
+    /**
+     * Сохраняет согласие пользователя: актуальное состояние в UidBindings
+     * + запись в историю X5PwaConsentLog.
+     *
+     * @return array{ok:bool,reason:?string,granted:bool,serverAt:?string}
+     */
+    public static function saveConsent(string $uid, bool $granted, string $localDt, string $source = 'app'): array
+    {
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['ID'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+        if (!$row) return ['ok' => false, 'reason' => 'UID_NOT_FOUND', 'granted' => false, 'serverAt' => null];
+
+        $now = self::now();
+        $localDt = mb_substr($localDt, 0, 32);
+
+        $res = $dc::update((int)$row['ID'], [
+            'UF_CONSENT_GRANTED'  => $granted ? 'Y' : 'N',
+            'UF_CONSENT_DATETIME' => $now,
+            'UF_CONSENT_LOCAL_DT' => $localDt,
+        ]);
+        if (!$res->isSuccess()) {
+            return ['ok' => false, 'reason' => 'DB_ERROR', 'granted' => false, 'serverAt' => null];
+        }
+
+        // История (не критично, но полезно для аудита)
+        try {
+            $logDc = self::dataClass('X5PwaConsentLog');
+            $logDc::add([
+                'UF_UID'       => $uid,
+                'UF_GRANTED'   => $granted ? 'Y' : 'N',
+                'UF_LOCAL_DT'  => $localDt,
+                'UF_SERVER_AT' => $now,
+                'UF_IP'        => mb_substr((string)($_SERVER['REMOTE_ADDR'] ?? ''), 0, 45),
+                'UF_SOURCE'    => mb_substr($source, 0, 32),
+            ]);
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'consent log failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
+                'Storage::saveConsent',
+                '/x5.pwa.log'
+            );
+        }
+
+        return [
+            'ok'       => true,
+            'reason'   => null,
+            'granted'  => $granted,
+            'serverAt' => $now->format('Y-m-d\TH:i:sP'),
+        ];
+    }
+
+    /**
+     * @return array{granted:bool,hasConsent:bool,serverAt:?string,localDt:?string}
+     */
+    public static function getConsent(string $uid): array
+    {
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['UF_CONSENT_GRANTED', 'UF_CONSENT_DATETIME', 'UF_CONSENT_LOCAL_DT'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+
+        if (!$row) {
+            return ['granted' => false, 'hasConsent' => false, 'serverAt' => null, 'localDt' => null];
+        }
+
+        $rawGranted = $row['UF_CONSENT_GRANTED'] ?? null;
+        $hasConsent = ($rawGranted === 'Y' || $rawGranted === 'N');
+        $granted    = ($rawGranted === 'Y');
+
+        $serverAt = null;
+        if (!empty($row['UF_CONSENT_DATETIME'])) {
+            try {
+                $serverAt = $row['UF_CONSENT_DATETIME']->format('Y-m-d\TH:i:sP');
+            } catch (\Throwable $e) {
+                $serverAt = null;
+            }
+        }
+
+        $localDt = trim((string)($row['UF_CONSENT_LOCAL_DT'] ?? ''));
+
+        return [
+            'granted'    => $granted,
+            'hasConsent' => $hasConsent,
+            'serverAt'   => $serverAt,
+            'localDt'    => $localDt !== '' ? $localDt : null,
+        ];
+    }
+
+    /**
+     * История согласий по пользователю (для админки/аудита).
+     */
+    public static function getConsentHistory(string $uid, int $limit = 100): array
+    {
+        try {
+            $dc = self::dataClass('X5PwaConsentLog');
+            return $dc::getList([
+                'filter' => ['=UF_UID' => $uid],
+                'order'  => ['UF_SERVER_AT' => 'DESC', 'ID' => 'DESC'],
+                'limit'  => max(1, $limit),
+            ])->fetchAll();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    // ───────── Выбор привычки (одна на пользователя, без смены) ─────────
+
+    public static function getSelectedHabit(string $uid): ?string
+    {
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['UF_HABIT_ID'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+        if (!$row) return null;
+        $h = trim((string)($row['UF_HABIT_ID'] ?? ''));
+        return $h !== '' ? $h : null;
+    }
+
+    /**
+     * @return array{ok:bool,reason:?string,habitId:?string,selectedAt:?string}
+     *   reason: OK | ALREADY_SELECTED | UID_NOT_FOUND | DB_ERROR
+     */
+    public static function selectHabit(string $uid, string $habitId): array
+    {
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['ID', 'UF_HABIT_ID', 'UF_HABIT_SELECTED_AT'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+        if (!$row) return ['ok' => false, 'reason' => 'UID_NOT_FOUND', 'habitId' => null, 'selectedAt' => null];
+
+        $existing = trim((string)($row['UF_HABIT_ID'] ?? ''));
+        if ($existing !== '') {
+            if ($existing === $habitId) {
+                $at = !empty($row['UF_HABIT_SELECTED_AT'])
+                    ? $row['UF_HABIT_SELECTED_AT']->format('Y-m-d\TH:i:sP')
+                    : null;
+                return ['ok' => true, 'reason' => 'OK', 'habitId' => $existing, 'selectedAt' => $at];
+            }
+            $at = !empty($row['UF_HABIT_SELECTED_AT'])
+                ? $row['UF_HABIT_SELECTED_AT']->format('Y-m-d\TH:i:sP')
+                : null;
+            return ['ok' => false, 'reason' => 'ALREADY_SELECTED', 'habitId' => $existing, 'selectedAt' => $at];
+        }
+
+        $now = self::now();
+        $res = $dc::update((int)$row['ID'], [
+            'UF_HABIT_ID'          => mb_substr($habitId, 0, 32),
+            'UF_HABIT_SELECTED_AT' => $now,
+        ]);
+        if (!$res->isSuccess()) {
+            return ['ok' => false, 'reason' => 'DB_ERROR', 'habitId' => null, 'selectedAt' => null];
+        }
+
+        return [
+            'ok'         => true,
+            'reason'     => 'OK',
+            'habitId'    => $habitId,
+            'selectedAt' => $now->format('Y-m-d\TH:i:sP'),
+        ];
     }
 }

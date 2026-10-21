@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 8;
+        return 9;
     }
 
     public static function config(): array
@@ -36,6 +36,13 @@ class HlSetup
                     'UF_TZ_OFFSET_MIN'     => ['integer', []],
                     // Кеш: сумма подтверждённых шагов по всем дням
                     'UF_TOTAL_STEPS'       => ['integer', []],
+                    // Согласие на обработку ПД
+                    'UF_CONSENT_GRANTED'   => ['string', ['SIZE' => 1]],
+                    'UF_CONSENT_DATETIME'  => ['datetime', []],
+                    'UF_CONSENT_LOCAL_DT'  => ['string', ['SIZE' => 32]],
+                    // Выбранная пользователем привычка (одна, менять нельзя)
+                    'UF_HABIT_ID'          => ['string', ['SIZE' => 32]],
+                    'UF_HABIT_SELECTED_AT' => ['datetime', []],
                 ],
             ],
             'UserStates' => [
@@ -158,6 +165,18 @@ class HlSetup
                     'UF_REJECT_REASON'  => ['string', ['SIZE' => 255]],
                 ],
             ],
+            'ConsentLog' => [
+                'name'  => 'X5PwaConsentLog',
+                'table' => 'x5_pwa_consent_log',
+                'fields' => [
+                    'UF_UID'       => ['string', ['SIZE' => 40]],
+                    'UF_GRANTED'   => ['string', ['SIZE' => 1]],
+                    'UF_LOCAL_DT'  => ['string', ['SIZE' => 32]],
+                    'UF_SERVER_AT' => ['datetime', []],
+                    'UF_IP'        => ['string', ['SIZE' => 45]],
+                    'UF_SOURCE'    => ['string', ['SIZE' => 32]],
+                ],
+            ],
         ];
     }
 
@@ -255,11 +274,17 @@ class HlSetup
             'x5_pwa_uid_bindings' => [
                 'idx_x5pwa_bindings_total'   => 'UF_TOTAL_STEPS',
                 'idx_x5pwa_bindings_workpl'  => 'UF_WORKPLACE',
+                'idx_x5pwa_bindings_habit'   => 'UF_HABIT_ID',
+                'idx_x5pwa_bindings_consent' => 'UF_CONSENT_GRANTED',
             ],
             'x5_pwa_steps' => [
                 'idx_x5pwa_steps_uid_status'    => 'UF_UID, UF_STATUS',
                 'idx_x5pwa_steps_status_date'   => 'UF_STATUS, UF_LOCAL_DATE',
                 'idx_x5pwa_steps_date'          => 'UF_LOCAL_DATE',
+            ],
+            'x5_pwa_consent_log' => [
+                'idx_x5pwa_consent_uid'    => 'UF_UID',
+                'idx_x5pwa_consent_uid_at' => 'UF_UID, UF_SERVER_AT',
             ],
         ];
 

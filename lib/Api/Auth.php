@@ -62,14 +62,15 @@ class Auth
         if (!$uidBinding) Storage::saveBinding($uid, $deviceId, $deviceCreatedAt);
         else              Storage::touchBinding((int)$uidBinding['ID']);
 
-        // Таймзона пользователя — если клиент прислал TZ_OFFSET_MIN
-        // или LOCAL_DATETIME, обновляем.
+        // Таймзона пользователя
         $tz = Storage::parseTzOffsetFromArray($body);
         if ($tz !== null) {
             Storage::saveUserTzOffsetMin($uid, $tz);
         }
 
         $habits = Storage::getHabits($uid);
+        $consent = Storage::getConsent($uid);
+        $selectedHabit = Storage::getSelectedHabit($uid);
 
         return [
             'RESULT'  => 'OK',
@@ -78,6 +79,15 @@ class Auth
             'READS'   => Storage::getReads($uid),
             'TASKS'   => Storage::getTasks($uid),
             'HABITS'  => empty($habits) ? (object)[] : $habits,
+
+            // ─── Согласие на обработку ПД ───
+            'CONSENT'          => $consent['granted'],
+            'CONSENT_AT'       => $consent['serverAt'],
+            'CONSENT_LOCAL_DT' => $consent['localDt'],
+            'HAS_CONSENT'      => $consent['hasConsent'],
+
+            // ─── Выбранная привычка ───
+            'SELECTED_HABIT'   => $selectedHabit,
         ];
     }
 }
