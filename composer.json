@@ -1,0 +1,7 @@
+{
+    "require": {
+        "php": ">=7.4",
+        "minishlink/web-push": "^9.0",
+        "aws/aws-sdk-php": "^3.300"
+    }
+}

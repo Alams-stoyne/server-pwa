@@ -1,0 +1,121 @@
+<?php
+namespace X5\Pwa\Api;
+
+use X5\Pwa\HabitsBuilder;
+use X5\Pwa\Storage;
+
+class Habits
+{
+    public static function list(array $b): array
+    {
+        $uid = (string)($b['ID_USER'] ?? $b['UID'] ?? '');
+        if (!$uid) return ['RESULT' => 'ERROR'];
+
+        Storage::touchBindingByUid($uid);
+
+        $h = Storage::getHabits($uid);
+        return ['RESULT' => 'OK', 'HABITS' => empty($h) ? (object)[] : $h];
+    }
+
+    /**
+     * Отметка выполнения привычки.
+     *
+     * Контроль перевыполнения:
+     *   • doneToday считается по ЛОКАЛЬНОЙ дате пользователя;
+     *   • если doneToday >= timesPerDay — запись не создаётся;
+     *   • ответ: RESULT = 'LIMIT_REACHED' + doneToday, timesPerDay, lastDoneAt;
+     *   • при успехе: RESULT = 'OK', doneToday (после записи), canComplete (false если лимит).
+     */
+    public static function complete(array $b): array
+    {
+        $uid = (string)($b['ID_USER'] ?? '');
+        $id  = (string)($b['HABIT_ID'] ?? '');
+        if (!$uid || !$id) return ['RESULT' => 'ERROR'];
+
+        // ─── Таймзона и локальная дата пользователя ───
+        $tz = Storage::parseTzOffsetFromArray($b);
+        if ($tz !== null) {
+            Storage::saveUserTzOffsetMin($uid, $tz);
+        } else {
+            $tz = Storage::getUserTzOffsetMin($uid);
+        }
+        $offsetMs       = $tz * 60 * 1000;
+        $userLocalMs    = (time() * 1000) + $offsetMs;
+        $userLocalDate  = gmdate('Y-m-d', (int)($userLocalMs / 1000));
+
+        // ─── Настройки привычки ───
+        $timesPerDay = null;
+        $lastDoneAt  = null;
+        foreach (HabitsBuilder::getAll() as $h) {
+            if ($h['id'] !== $id) continue;
+            $timesPerDay = (int)$h['timesPerDay'];
+            break;
+        }
+        if ($timesPerDay === null) {
+            // Неизвестная привычка — не блокируем, но и не пишем
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Unknown habit'];
+        }
+
+        // ─── Сколько раз уже выполнено сегодня (в локальной дате) ───
+        $logs = Storage::getHabits($uid);
+        $completionsToday = 0;
+        $latestServerMs   = 0;
+
+        foreach (($logs[$id] ?? []) as $dt) {
+            $serverMs  = strtotime((string)$dt) * 1000;
+            $localMs   = $serverMs + $offsetMs;
+            $localDate = gmdate('Y-m-d', (int)($localMs / 1000));
+
+            if ($localDate !== $userLocalDate) continue;
+
+            $completionsToday++;
+            if ($serverMs > $latestServerMs) {
+                $latestServerMs = $serverMs;
+            }
+        }
+
+        if ($latestServerMs > 0) {
+            $lastDoneAt = date('Y-m-d\TH:i:sP', (int)($latestServerMs / 1000));
+        }
+
+        // ─── Лимит уже достигнут — отказ ───
+        if ($completionsToday >= $timesPerDay) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                sprintf(
+                    'LIMIT_REACHED uid=%s habit=%s doneToday=%d/%d localDate=%s',
+                    substr($uid, 0, 12) . '…', $id,
+                    $completionsToday, $timesPerDay, $userLocalDate
+                ),
+                'Habits::complete',
+                '/x5.pwa.log'
+            );
+
+            return [
+                'RESULT'      => 'LIMIT_REACHED',
+                'MESSAGE'     => 'На сегодня норма выполнения привычки исчерпана.',
+                'HABIT_ID'    => $id,
+                'DONE_TODAY'  => $completionsToday,
+                'TIMES_PER_DAY' => $timesPerDay,
+                'LAST_DONE_AT' => $lastDoneAt,
+                'CAN_COMPLETE' => false,
+            ];
+        }
+
+        // ─── Записываем ───
+        $t = Storage::addHabit($uid, $id);
+        Storage::setLastNotified($uid, $id);
+        Storage::touchBindingByUid($uid);
+
+        $doneToday = $completionsToday + 1;
+
+        return [
+            'RESULT'          => 'OK',
+            'HABIT_ID'        => $id,
+            'DONE_TODAY'      => $doneToday,
+            'TIMES_PER_DAY'   => $timesPerDay,
+            'LAST_DONE_AT'    => $t->format('Y-m-d\TH:i:sP'),
+            'CAN_COMPLETE'    => $doneToday < $timesPerDay,
+            'SERVER_DATETIME' => $t->format('Y-m-d\TH:i:s\Z'),
+        ];
+    }
+}
