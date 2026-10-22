@@ -8,6 +8,12 @@ class Dumper
     private const STATS_INTERVAL_DEFAULT = 600;
     private const STATS_INTERVAL_MIN     = 60;
 
+    /** Минимальный интервал между принудительными пересборками (сек). */
+    private const REGEN_THROTTLE_SEC     = 30;
+
+    /** Защита от рекурсии / параллельного запуска внутри одного процесса. */
+    private static bool $inProgress = false;
+
     private static function log(string $msg, string $label = 'Dumper debug'): void
     {
         if (!self::DEBUG) return;
@@ -40,14 +46,38 @@ class Dumper
     {
         $iblockId = (int)($arFields['IBLOCK_ID'] ?? 0);
         self::log("onElementSave iblockId=$iblockId elementId=" . ($arFields['ID'] ?? '?'));
+
         if (!$iblockId || !self::isOurIblock($iblockId)) {
             self::log("  → not our iblock, skip");
             return;
         }
+
+        // Защита от рекурсии: regenerateAll сам может дернуть ИБ/события
+        if (self::$inProgress) {
+            self::log("  → skipped: regenerateAll already in progress");
+            return;
+        }
+
+        // Throttle: если пересобирали < REGEN_THROTTLE_SEC назад — пропускаем.
+        // Данные не «потеряются»: следующий cron/агент пересоберёт,
+        // а между тем старые дампы остаются валидными.
+        $lastRunAgo = microtime(true) - (float)Settings::get('last_regen_started_at', '0');
+        if ($lastRunAgo < self::REGEN_THROTTLE_SEC) {
+            self::log("  → throttled: last regen " . round($lastRunAgo, 1) . "s ago");
+            Settings::set('regen_dirty', '1');
+            return;
+        }
+
+        Settings::set('last_regen_started_at', (string)microtime(true));
+        self::$inProgress = true;
         try {
             self::regenerateAll();
+            Settings::set('regen_dirty', '0');
         } catch (\Throwable $e) {
+            Settings::set('regen_dirty', '1');
             self::log('  → REGEN FAILED: ' . $e->getMessage(), 'Dumper::onElementSave');
+        } finally {
+            self::$inProgress = false;
         }
     }
 

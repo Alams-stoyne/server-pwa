@@ -68,26 +68,31 @@ class Auth
             Storage::saveUserTzOffsetMin($uid, $tz);
         }
 
-        $habits = Storage::getHabits($uid);
-        $consent = Storage::getConsent($uid);
+        $habits        = Storage::getHabits($uid);
+        $storedState   = Storage::getState($uid);
+        $consent       = Storage::getConsent($uid);
         $selectedHabit = Storage::getSelectedHabit($uid);
+
+        // ─── Склеиваем STATE с серверными полями ───
+        //   CONSENT и HABIT_SELECTED — сервер-authoritative,
+        //   они добавляются только на чтении, но не пишутся через POST /state.
+        $state = is_array($storedState) ? $storedState : [];
+
+        $state['HABIT_SELECTED'] = $selectedHabit; // string | null
+
+        $state['CONSENT'] = [
+            'ANSWERED' => (bool)$consent['hasConsent'],
+            'GRANTED'  => (bool)$consent['granted'],
+            'AT'       => $consent['serverAt'], // ISO 8601 | null
+        ];
 
         return [
             'RESULT'  => 'OK',
             'ID_USER' => $uid,
-            'STATE'   => Storage::getState($uid),
+            'STATE'   => $state,
             'READS'   => Storage::getReads($uid),
             'TASKS'   => Storage::getTasks($uid),
             'HABITS'  => empty($habits) ? (object)[] : $habits,
-
-            // ─── Согласие на обработку ПД ───
-            'CONSENT'          => $consent['granted'],
-            'CONSENT_AT'       => $consent['serverAt'],
-            'CONSENT_LOCAL_DT' => $consent['localDt'],
-            'HAS_CONSENT'      => $consent['hasConsent'],
-
-            // ─── Выбранная привычка ───
-            'SELECTED_HABIT'   => $selectedHabit,
         ];
     }
 }

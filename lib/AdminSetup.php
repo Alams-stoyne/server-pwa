@@ -1,9 +1,6 @@
 <?php
 namespace X5\Pwa;
 
-/**
- * Управление файлами-обёртками в /bitrix/admin/.
- */
 class AdminSetup
 {
     private const MODULE_ROOT   = 'local/modules/x5.pwa/';
@@ -12,14 +9,17 @@ class AdminSetup
     public static function files(): array
     {
         return [
-            'x5.pwa_menu.php'         => ['path' => 'admin/menu.php',          'wrapper' => 'return'],
-            'x5_pwa_users.php'        => ['path' => 'admin/users.php',         'wrapper' => 'plain'],
-            'x5_pwa_user_detail.php'  => ['path' => 'admin/user_detail.php',   'wrapper' => 'plain'],
-            'x5_pwa_push.php'         => ['path' => 'admin/push.php',          'wrapper' => 'plain'],
-            'x5_pwa_stats.php'        => ['path' => 'admin/stats.php',         'wrapper' => 'plain'],
-            'x5_pwa_users_export.php' => ['path' => 'admin/export_csv.php',    'wrapper' => 'plain'],
-            'x5_pwa_reflections.php'  => ['path' => 'admin/reflections.php',   'wrapper' => 'plain'],
-            'x5_pwa_steps.php'        => ['path' => 'admin/steps.php',         'wrapper' => 'plain'],
+            'x5.pwa_menu.php'          => ['path' => 'admin/menu.php',               'wrapper' => 'return'],
+            'x5_pwa_users.php'         => ['path' => 'admin/users.php',              'wrapper' => 'plain'],
+            'x5_pwa_user_detail.php'   => ['path' => 'admin/user_detail.php',        'wrapper' => 'plain'],
+            'x5_pwa_push.php'          => ['path' => 'admin/push.php',               'wrapper' => 'plain'],
+            'x5_pwa_stats.php'         => ['path' => 'admin/stats.php',              'wrapper' => 'plain'],
+            'x5_pwa_users_export.php'  => ['path' => 'admin/export_csv.php',         'wrapper' => 'plain'],
+            'x5_pwa_reflections.php'   => ['path' => 'admin/reflections.php',        'wrapper' => 'plain'],
+            'x5_pwa_steps.php'         => ['path' => 'admin/steps.php',              'wrapper' => 'plain'],
+            'x5_pwa_support.php'       => ['path' => 'admin/support.php',            'wrapper' => 'plain'],
+            'x5_pwa_support_detail.php'=> ['path' => 'admin/support_detail.php',     'wrapper' => 'plain'],
+            'x5_pwa_support_export.php'=> ['path' => 'admin/export_support_csv.php', 'wrapper' => 'plain'],
         ];
     }
 

@@ -60,8 +60,18 @@ class Router
         if ($path === '/consent/send'   && $method === 'POST') return [Consent::send($body), 200];
         if ($path === '/consent/status' && $method === 'POST') return [Consent::status($body), 200];
 
-        // ─── Выбор привычки (одна, без смены) ───
-        if ($path === '/habits/select'  && $method === 'POST') return [Habits::select($body), 200];
+        // ─── Привычки: чтение выбора + запись выбора ───
+        if ($path === '/habits/selection' && $method === 'POST') return [Habits::selection($body), 200];
+        if ($path === '/habits/select'    && $method === 'POST') return [Habits::select($body), 200];
+
+        // ─── Техподдержка ───
+        if ($path === '/support/ticket/create'        && $method === 'POST') return [Support::create($body),      200];
+        if ($path === '/support/ticket/create_guest'  && $method === 'POST') return [Support::createGuest($body), 200];
+        if ($path === '/support/ticket/list'          && $method === 'POST') return [Support::tickets($body),    200];
+        if ($path === '/support/ticket/get'           && $method === 'POST') return [Support::get($body),        200];
+        if ($path === '/support/ticket/guest_get'     && $method === 'POST') return [Support::getGuest($body),   200];
+        if ($path === '/support/ticket/message'       && $method === 'POST') return [Support::send($body),       200];
+        if ($path === '/support/ticket/guest_message' && $method === 'POST') return [Support::sendGuest($body),  200];
 
         // ─── Завершение элементов ───
         if ($path === '/lecture/read'   && $method === 'POST') return [Reads::add($body), 200];

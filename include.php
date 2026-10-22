@@ -25,6 +25,7 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\TutorialBuilder'   => 'lib/TutorialBuilder.php',
     'X5\\Pwa\\ReflectionBuilder' => 'lib/ReflectionBuilder.php',
     'X5\\Pwa\\StepsBuilder'      => 'lib/StepsBuilder.php',
+    'X5\\Pwa\\SupportBuilder'    => 'lib/SupportBuilder.php',
     'X5\\Pwa\\Dumper'            => 'lib/Dumper.php',
     'X5\\Pwa\\Storage'           => 'lib/Storage.php',
     'X5\\Pwa\\Data'              => 'lib/Data.php',
@@ -53,6 +54,7 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\Api\\Reflection' => 'lib/Api/Reflection.php',
     'X5\\Pwa\\Api\\Steps'      => 'lib/Api/Steps.php',
     'X5\\Pwa\\Api\\Consent'    => 'lib/Api/Consent.php',
+    'X5\\Pwa\\Api\\Support'    => 'lib/Api/Support.php',
 ]);
 
 if (ModuleManager::isModuleInstalled('x5.pwa')) {

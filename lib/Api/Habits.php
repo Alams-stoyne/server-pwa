@@ -23,6 +23,77 @@ class Habits
     }
 
     /**
+     * POST /habits/selection
+     * Body: { ID_USER }
+     * Ответ: { RESULT: 'OK', HABIT_ID: 'water-energy' | null, HABIT_TITLE?, SELECTED_AT? }
+     *
+     * Отдаёт текущий выбор. Если пользователь ещё не выбрал — HABIT_ID: null.
+     */
+    public static function selection(array $b): array
+    {
+        $uid = trim((string)($b['ID_USER'] ?? ''));
+        if ($uid === '') {
+            return [
+                'RESULT'   => 'ERROR',
+                'MESSAGE'  => 'ID_USER required',
+                'HABIT_ID' => null,
+            ];
+        }
+        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+            return [
+                'RESULT'   => 'ERROR',
+                'MESSAGE'  => 'Invalid ID_USER',
+                'HABIT_ID' => null,
+            ];
+        }
+
+        if (Storage::isBlocked($uid)) {
+            return [
+                'RESULT'   => 'BLOCKED',
+                'MESSAGE'  => 'Доступ приостановлен.',
+                'HABIT_ID' => null,
+            ];
+        }
+
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return [
+                'RESULT'   => 'UID_NOT_FOUND',
+                'MESSAGE'  => 'Пользователь не найден.',
+                'HABIT_ID' => null,
+            ];
+        }
+
+        $habitId = Storage::getSelectedHabit($uid);
+
+        $result = [
+            'RESULT'   => 'OK',
+            'HABIT_ID' => $habitId, // string | null
+        ];
+
+        if ($habitId !== null) {
+            // Название привычки — удобно для клиента (показать в UI без /config/habits)
+            foreach (HabitsBuilder::getAll() as $h) {
+                if ((string)$h['id'] === (string)$habitId) {
+                    $result['HABIT_TITLE'] = (string)$h['title'];
+                    break;
+                }
+            }
+            if (!empty($binding['UF_HABIT_SELECTED_AT'])) {
+                try {
+                    $result['SELECTED_AT'] = $binding['UF_HABIT_SELECTED_AT']->format('Y-m-d\TH:i:sP');
+                } catch (\Throwable $e) {
+                    /* ignore bad datetime */
+                }
+            }
+        }
+
+        Storage::touchBindingByUid($uid);
+
+        return $result;
+    }
+
+    /**
      * POST /habits/select
      * Body: { ID_USER, HABIT_ID }
      * Ответ:
@@ -45,7 +116,6 @@ class Habits
             return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
         }
 
-        // Проверяем, что привычка есть в справочнике
         $exists = false;
         foreach (HabitsBuilder::getAll() as $h) {
             if ((string)$h['id'] === $habitId) { $exists = true; break; }
@@ -101,14 +171,16 @@ class Habits
         $userLocalDate  = gmdate('Y-m-d', (int)($userLocalMs / 1000));
 
         // ─── Настройки привычки ───
+        $habitCfg    = null;
         $timesPerDay = null;
         $lastDoneAt  = null;
         foreach (HabitsBuilder::getAll() as $h) {
-            if ($h['id'] !== $id) continue;
+            if ((string)$h['id'] !== $id) continue;
+            $habitCfg    = $h;
             $timesPerDay = (int)$h['timesPerDay'];
             break;
         }
-        if ($timesPerDay === null) {
+        if ($timesPerDay === null || $habitCfg === null) {
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'Unknown habit'];
         }
 
@@ -118,7 +190,9 @@ class Habits
         $latestServerMs   = 0;
 
         foreach (($logs[$id] ?? []) as $dt) {
-            $serverMs  = strtotime((string)$dt) * 1000;
+            $serverMs = self::toServerMs($dt);
+            if ($serverMs <= 0) continue;
+
             $localMs   = $serverMs + $offsetMs;
             $localDate = gmdate('Y-m-d', (int)($localMs / 1000));
 
@@ -134,6 +208,7 @@ class Habits
             $lastDoneAt = date('Y-m-d\TH:i:sP', (int)($latestServerMs / 1000));
         }
 
+        // ─── Лимит уже достигнут — отказ ───
         if ($completionsToday >= $timesPerDay) {
             \Bitrix\Main\Diag\Debug::writeToFile(
                 sprintf(
@@ -156,11 +231,22 @@ class Habits
             ];
         }
 
+        // ─── Записываем ───
         $t = Storage::addHabit($uid, $id);
         Storage::setLastNotified($uid, $id);
-        Storage::touchBindingByUid($uid);
 
         $doneToday = $completionsToday + 1;
+
+        // Если норма на сегодня выполнена — гарантированно блокируем
+        // дальнейшие напоминания по этой привычке на этот день.
+        if ($doneToday >= $timesPerDay) {
+            $hint = isset($habitCfg['timesPerDayHint'])
+                ? (int)$habitCfg['timesPerDayHint']
+                : 1;
+            Storage::markHabitDayDone($uid, $id, $userLocalDate, $hint);
+        }
+
+        Storage::touchBindingByUid($uid);
 
         return [
             'RESULT'          => 'OK',
@@ -171,5 +257,20 @@ class Habits
             'CAN_COMPLETE'    => $doneToday < $timesPerDay,
             'SERVER_DATETIME' => $t->format('Y-m-d\TH:i:s\Z'),
         ];
+    }
+
+    /**
+     * Приводит дату выполнения к unix-ms по серверу (UTC).
+     */
+    private static function toServerMs($dt): int
+    {
+        if ($dt instanceof \Bitrix\Main\Type\DateTime
+            || $dt instanceof \DateTimeInterface) {
+            return $dt->getTimestamp() * 1000;
+        }
+        $s = trim((string)$dt);
+        if ($s === '') return 0;
+        $ts = strtotime($s);
+        return $ts > 0 ? $ts * 1000 : 0;
     }
 }

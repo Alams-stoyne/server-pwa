@@ -96,24 +96,31 @@ class Scheduler
     /**
      * Напоминания о привычках, ориентируясь на локальное время пользователя.
      *
-     * Учитываем для каждого пользователя:
-     *   • локальный час   — не в ночное время
-     *   • с начала локального дня прошло не меньше FIRST_DELAY_HOURS
-     *   • doneToday >= timesPerDay           — не напоминаем (норма дня выполнена)
-     *   • MIN_INTERVAL_MIN от последнего выполнения (включая вчерашнее!)
-     *   • NOTIFY_FROM_TIME                    — раньше этого времени не напоминать
-     *   • TIMES_PER_DAY_HINT                  — лимит подсказок за день
-     *   • MIN_INTERVAL_HINT                   — интервал между подсказками
+     * Ключевое отличие от предыдущей версии:
+     *   • напоминаем ТОЛЬКО по выбранной привычке (UF_HABIT_ID);
+     *   • если привычка ещё не выбрана — только по тем, что пользователь
+     *     хотя бы раз выполнял (а не по всему каталогу);
+     *   • корректный парсинг UF_COMPLETED_AT через getTimestamp().
      */
     private static function runHabitReminders(): void
     {
         $allHabits = HabitsBuilder::getAll();
         if (!$allHabits) return;
 
+        // Индекс: id привычки → её конфиг
+        $habitsById = [];
+        foreach ($allHabits as $cfg) {
+            $habitsById[(string)$cfg['id']] = $cfg;
+        }
+
         $nowMs = time() * 1000;
 
         foreach (Storage::listSubscriptions() as $row) {
-            $uid = $row['UF_UID'];
+            $uid = (string)$row['UF_UID'];
+            if ($uid === '') continue;
+
+            if (Storage::isBlocked($uid)) continue;
+
             $sub = Storage::getSubscription($uid);
             if (!$sub) continue;
 
@@ -136,25 +143,50 @@ class Scheduler
 
             $userLogs = Storage::getHabits($uid);
 
-            foreach ($allHabits as $cfg) {
-                $habitId = $cfg['id'];
+            // ─── Кого напоминаем ───
+            //   • если задан UF_HABIT_ID — только его;
+            //   • если не задан — только привычки, которые пользователь
+            //     когда-либо выполнял (есть в $userLogs).
+            $selectedHabit    = Storage::getSelectedHabit($uid);
+            $habitIdsToNotify = [];
+
+            if ($selectedHabit !== null) {
+                if (isset($habitsById[$selectedHabit])) {
+                    $habitIdsToNotify[] = $selectedHabit;
+                } else {
+                    \Bitrix\Main\Diag\Debug::writeToFile(
+                        'selected habit not found in catalog uid='
+                        . substr($uid, 0, 12) . '… habit=' . $selectedHabit,
+                        'Scheduler habit',
+                        '/x5.pwa.log'
+                    );
+                }
+            } else {
+                foreach (array_keys($userLogs) as $hid) {
+                    $hid = (string)$hid;
+                    if (isset($habitsById[$hid])) {
+                        $habitIdsToNotify[] = $hid;
+                    }
+                }
+            }
+
+            if (!$habitIdsToNotify) continue;
+
+            foreach ($habitIdsToNotify as $habitId) {
+                $cfg = $habitsById[$habitId];
                 $log = $userLogs[$habitId] ?? [];
 
-                // ─── Считаем 2 величины за один проход ───
-                //   completionsToday      — сколько раз выполнено СЕГОДНЯ (в локальной дате)
-                //   lastCompletedServerMs — когда последний раз выполняли (ВООБЩЕ, включая вчера)
                 $completionsToday      = 0;
                 $lastCompletedServerMs = 0;
 
                 foreach ($log as $dt) {
-                    $completedServerMs = strtotime((string)$dt) * 1000;
+                    $completedServerMs = self::toServerMs($dt);
+                    if ($completedServerMs <= 0) continue;
 
-                    // ВСЕГДА обновляем — нужно для MIN_INTERVAL_MIN через границу дня
                     if ($completedServerMs > $lastCompletedServerMs) {
                         $lastCompletedServerMs = $completedServerMs;
                     }
 
-                    // Для счётчика — только сегодняшние (по локальной дате)
                     $completedLocalMs   = $completedServerMs + $offsetMs;
                     $completedLocalDate = gmdate('Y-m-d', (int)($completedLocalMs / 1000));
                     if ($completedLocalDate === $userLocalDate) {
@@ -164,20 +196,21 @@ class Scheduler
 
                 // 1. Норма дня выполнена
                 if ($completionsToday >= (int)$cfg['timesPerDay']) {
+                    self::logSkip($uid, $habitId, 'done_today', [
+                        'completionsToday' => $completionsToday,
+                        'timesPerDay'      => (int)$cfg['timesPerDay'],
+                    ]);
                     continue;
                 }
 
                 // 2. Интервал между выполнениями ещё не прошёл
-                //    Считаем от последнего выполнения ЗА ВСЁ ВРЕМЯ, а не только от сегодняшнего.
-                //    Это то, что блокирует утреннее напоминание после вечернего выполнения,
-                //    если MIN_INTERVAL_MIN задан достаточно большим.
                 $baseline = $lastCompletedServerMs ?: $firstAtServerMs;
                 $minMs    = ((int)$cfg['minIntervalMin']) * 60 * 1000;
                 if ($minMs > 0 && ($nowMs - $baseline) < $minMs) {
                     self::logSkip($uid, $habitId, 'min_interval_min', [
-                        'baseline'  => gmdate('c', (int)($baseline / 1000)),
-                        'elapsed'   => (int)(($nowMs - $baseline) / 60000) . 'min',
-                        'required'  => $minMs / 60000 . 'min',
+                        'baseline' => gmdate('c', (int)($baseline / 1000)),
+                        'elapsed'  => (int)(($nowMs - $baseline) / 60000) . 'min',
+                        'required' => $minMs / 60000 . 'min',
                     ]);
                     continue;
                 }
@@ -186,7 +219,7 @@ class Scheduler
                 $notifyFromTime = (string)($cfg['notifyFromTime'] ?? '');
                 if ($notifyFromTime !== '' && $userLocalTime < $notifyFromTime) {
                     self::logSkip($uid, $habitId, 'notify_from_time', [
-                        'local_time' => $userLocalTime,
+                        'local_time'  => $userLocalTime,
                         'notify_from' => $notifyFromTime,
                     ]);
                     continue;
@@ -195,7 +228,6 @@ class Scheduler
                 // 4. Состояние напоминаний за сегодня
                 $notif = Storage::getNotifState($uid, $habitId, $userLocalDate);
 
-                // 4a. Лимит подсказок на сегодня исчерпан
                 if ($notif['todayCount'] >= (int)$cfg['timesPerDayHint']) {
                     self::logSkip($uid, $habitId, 'times_per_day_hint', [
                         'todayCount' => $notif['todayCount'],
@@ -204,7 +236,6 @@ class Scheduler
                     continue;
                 }
 
-                // 4b. Интервал между подсказками не прошёл
                 $hintMs = ((int)$cfg['minIntervalHint']) * 60 * 1000;
                 if ($hintMs > 0 && $notif['lastAt'] > 0
                     && ($nowMs - $notif['lastAt']) < $hintMs) {
@@ -240,8 +271,24 @@ class Scheduler
                     );
                 } elseif ($r['gone']) {
                     Storage::deleteSubscription($uid);
+                    break;
                 }
             }
         }
+    }
+
+    /**
+     * Приводит дату выполнения к unix-ms по серверу (UTC).
+     */
+    private static function toServerMs($dt): int
+    {
+        if ($dt instanceof \Bitrix\Main\Type\DateTime
+            || $dt instanceof \DateTimeInterface) {
+            return $dt->getTimestamp() * 1000;
+        }
+        $s = trim((string)$dt);
+        if ($s === '') return 0;
+        $ts = strtotime($s);
+        return $ts > 0 ? $ts * 1000 : 0;
     }
 }

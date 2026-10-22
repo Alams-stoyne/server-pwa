@@ -119,6 +119,57 @@ class Push
     }
 
     /**
+     * Универсальное уведомление по UID.
+     * Возвращает true, если push отправлен.
+     *
+     * @param string $uid    UID пользователя
+     * @param string $title  Заголовок
+     * @param string $body   Текст
+     * @param string $url    URL, открываемый при клике ('' → '/')
+     * @param string $tag    Тег для группировки/замены ('' → без тега)
+     */
+    public static function notifyUser(
+        string $uid,
+        string $title,
+        string $body,
+        string $url = '',
+        string $tag = ''
+    ): bool {
+        $uid = trim($uid);
+        if ($uid === '') return false;
+
+        $sub = Storage::getSubscription($uid);
+        if (!$sub) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'no subscription uid=' . substr($uid, 0, 12) . '…',
+                'Push::notifyUser skip',
+                '/x5.pwa.log'
+            );
+            return false;
+        }
+
+        $payload = [
+            'title' => $title,
+            'body'  => $body,
+            'icon'  => '/icons/icon-192.png',
+            'badge' => '/icons/icon-192.png',
+            'url'   => $url !== '' ? $url : '/',
+        ];
+        if ($tag !== '') {
+            $payload['tag'] = $tag;
+        }
+
+        $r = self::send($uid, $sub, $payload);
+        if (!$r['ok']) {
+            if ($r['gone']) {
+                Storage::deleteSubscription($uid);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * @return array{sent:int,failed:int,removed:int,errors:array}
      */
     public static function broadcast(array $payload): array
@@ -155,7 +206,6 @@ class Push
 
     /**
      * Payload для push-напоминания о привычке.
-     * Emoji больше не используется — только title и hint.
      */
     public static function buildHabitPayload(string $habitId, array $cfg): array
     {

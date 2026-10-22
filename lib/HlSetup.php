@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 9;
+        return 11;
     }
 
     public static function config(): array
@@ -34,13 +34,10 @@ class HlSetup
                     'UF_BLOCKED_AT'        => ['datetime', []],
                     'UF_BLOCK_REASON'      => ['string', ['SIZE' => 255]],
                     'UF_TZ_OFFSET_MIN'     => ['integer', []],
-                    // Кеш: сумма подтверждённых шагов по всем дням
                     'UF_TOTAL_STEPS'       => ['integer', []],
-                    // Согласие на обработку ПД
                     'UF_CONSENT_GRANTED'   => ['string', ['SIZE' => 1]],
                     'UF_CONSENT_DATETIME'  => ['datetime', []],
                     'UF_CONSENT_LOCAL_DT'  => ['string', ['SIZE' => 32]],
-                    // Выбранная пользователем привычка (одна, менять нельзя)
                     'UF_HABIT_ID'          => ['string', ['SIZE' => 32]],
                     'UF_HABIT_SELECTED_AT' => ['datetime', []],
                 ],
@@ -177,6 +174,39 @@ class HlSetup
                     'UF_SOURCE'    => ['string', ['SIZE' => 32]],
                 ],
             ],
+            'SupportTickets' => [
+                'name'  => 'X5PwaSupportTickets',
+                'table' => 'x5_pwa_support_tickets',
+                'fields' => [
+                    'UF_UID'            => ['string', ['SIZE' => 40]],
+                    'UF_DEVICE_ID'      => ['string', ['SIZE' => 64]],
+                    'UF_SOURCE'         => ['string', ['SIZE' => 16]],
+                    'UF_AUTH_ERROR'     => ['string', ['SIZE' => 32]],
+                    'UF_META'           => ['string', ['SIZE' => 2000, 'ROWS' => 4]],
+                    'UF_SUBJECT'        => ['string', ['SIZE' => 255]],
+                    'UF_STATUS'         => ['string', ['SIZE' => 16]],
+                    'UF_CREATED_AT'     => ['datetime', []],
+                    'UF_UPDATED_AT'     => ['datetime', []],
+                    'UF_CLOSED_AT'      => ['datetime', []],
+                    'UF_CLOSED_BY'      => ['integer', []],
+                    'UF_MESSAGES_COUNT' => ['integer', []],
+                    'UF_IP'             => ['string', ['SIZE' => 45]],
+                    'UF_UA'             => ['string', ['SIZE' => 255]],
+                ],
+            ],
+            'SupportMessages' => [
+                'name'  => 'X5PwaSupportMessages',
+                'table' => 'x5_pwa_support_messages',
+                'fields' => [
+                    'UF_TICKET_ID'  => ['integer', []],
+                    'UF_UID'        => ['string', ['SIZE' => 40]],
+                    'UF_IS_ADMIN'   => ['string', ['SIZE' => 1]],
+                    'UF_ADMIN_ID'   => ['integer', []],
+                    'UF_TEXT'       => ['string', ['SIZE' => 5000, 'ROWS' => 10]],
+                    'UF_IMAGES'     => ['string', ['SIZE' => 2000, 'ROWS' => 4]],
+                    'UF_CREATED_AT' => ['datetime', []],
+                ],
+            ],
         ];
     }
 
@@ -219,7 +249,6 @@ class HlSetup
 
         foreach (self::config() as $cfg) {
             $table = $cfg['table'];
-
             $exists = $conn->query(
                 "SHOW TABLES LIKE '" . $sqlHelper->forSql($table) . "'"
             )->fetch();
@@ -278,13 +307,28 @@ class HlSetup
                 'idx_x5pwa_bindings_consent' => 'UF_CONSENT_GRANTED',
             ],
             'x5_pwa_steps' => [
-                'idx_x5pwa_steps_uid_status'    => 'UF_UID, UF_STATUS',
-                'idx_x5pwa_steps_status_date'   => 'UF_STATUS, UF_LOCAL_DATE',
-                'idx_x5pwa_steps_date'          => 'UF_LOCAL_DATE',
+                'idx_x5pwa_steps_uid_status'  => 'UF_UID, UF_STATUS',
+                'idx_x5pwa_steps_status_date' => 'UF_STATUS, UF_LOCAL_DATE',
+                'idx_x5pwa_steps_date'        => 'UF_LOCAL_DATE',
             ],
             'x5_pwa_consent_log' => [
                 'idx_x5pwa_consent_uid'    => 'UF_UID',
                 'idx_x5pwa_consent_uid_at' => 'UF_UID, UF_SERVER_AT',
+            ],
+            'x5_pwa_support_tickets' => [
+                'idx_x5pwa_support_uid'     => 'UF_UID',
+                'idx_x5pwa_support_device'  => 'UF_DEVICE_ID',
+                'idx_x5pwa_support_source'  => 'UF_SOURCE',
+                'idx_x5pwa_support_status'  => 'UF_STATUS',
+                'idx_x5pwa_support_created' => 'UF_CREATED_AT',
+                'idx_x5pwa_support_updated' => 'UF_UPDATED_AT',
+                'idx_x5pwa_support_uid_upd' => 'UF_UID, UF_UPDATED_AT',
+                'idx_x5pwa_support_dev_upd' => 'UF_DEVICE_ID, UF_UPDATED_AT',
+            ],
+            'x5_pwa_support_messages' => [
+                'idx_x5pwa_support_msg_ticket'  => 'UF_TICKET_ID',
+                'idx_x5pwa_support_msg_created' => 'UF_CREATED_AT',
+                'idx_x5pwa_support_msg_t_c'     => 'UF_TICKET_ID, UF_CREATED_AT',
             ],
         ];
 

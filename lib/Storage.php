@@ -221,6 +221,57 @@ class Storage
     {
         $deleted = [];
 
+        // 1. Файлы шагомера
+        try {
+            $dc = self::dataClass('X5PwaSteps');
+            $rows = $dc::getList(['select' => ['UF_IMAGES'], 'filter' => ['=UF_UID' => $uid]])->fetchAll();
+            $cnt = 0;
+            foreach ($rows as $r) {
+                $ids = json_decode((string)$r['UF_IMAGES'], true) ?: [];
+                foreach ($ids as $fid) {
+                    $fid = (int)$fid;
+                    if ($fid > 0 && \CFile::Delete($fid)) $cnt++;
+                }
+            }
+            $deleted['X5PwaSteps_files'] = $cnt;
+        } catch (\Throwable $e) {
+            $deleted['X5PwaSteps_files'] = 'ERR: ' . $e->getMessage();
+        }
+
+        // 2. Тикеты поддержки + их сообщения + файлы сообщений
+        try {
+            $ticketsDc = self::dataClass('X5PwaSupportTickets');
+            $tickets = $ticketsDc::getList([
+                'select' => ['ID'],
+                'filter' => ['=UF_UID' => $uid],
+            ])->fetchAll();
+            $ticketIds = array_map('intval', array_column($tickets, 'ID'));
+
+            $msgDeleted = 0;
+            $msgFilesDeleted = 0;
+            if ($ticketIds) {
+                $msgDc = self::dataClass('X5PwaSupportMessages');
+                $msgs = $msgDc::getList([
+                    'select' => ['ID', 'UF_IMAGES'],
+                    'filter' => ['=UF_TICKET_ID' => $ticketIds],
+                ])->fetchAll();
+                foreach ($msgs as $m) {
+                    $ids = json_decode((string)$m['UF_IMAGES'], true) ?: [];
+                    foreach ($ids as $fid) {
+                        $fid = (int)$fid;
+                        if ($fid > 0 && \CFile::Delete($fid)) $msgFilesDeleted++;
+                    }
+                    $msgDc::delete((int)$m['ID']);
+                    $msgDeleted++;
+                }
+            }
+            $deleted['X5PwaSupportMessages'] = $msgDeleted;
+            $deleted['X5PwaSupportMessages_files'] = $msgFilesDeleted;
+        } catch (\Throwable $e) {
+            $deleted['X5PwaSupportMessages'] = 'ERR: ' . $e->getMessage();
+        }
+
+        // 3. Остальные таблицы
         $sources = [
             'X5PwaLectureReads'    => 'UF_UID',
             'X5PwaTaskCompletions' => 'UF_UID',
@@ -231,6 +282,7 @@ class Storage
             'X5PwaReflections'     => 'UF_UID',
             'X5PwaSteps'           => 'UF_UID',
             'X5PwaConsentLog'      => 'UF_UID',
+            'X5PwaSupportTickets'  => 'UF_UID',
             'X5PwaUidBindings'     => 'UF_UID',
         ];
 
@@ -498,6 +550,14 @@ class Storage
 
     public static function saveState(string $uid, $state): void
     {
+        // ─── Защита от подмены сервер-authoritative полей ───
+        //   CONSENT и HABIT_SELECTED — управляются ТОЛЬКО через
+        //   /consent/send и /habits/select. Клиент не может
+        //   «протащить» их сюда через тело POST /state.
+        if (is_array($state)) {
+            unset($state['CONSENT'], $state['HABIT_SELECTED']);
+        }
+
         $dc = self::dataClass('X5PwaUserStates');
         $existing = $dc::getList([
             'filter' => ['=UF_UID' => $uid], 'limit' => 1,
@@ -787,6 +847,42 @@ class Storage
         }
     }
 
+    /**
+     * Помечает в NotifLog, что норма по привычке на сегодня выполнена,
+     * чтобы Scheduler гарантированно больше не отправлял напоминания по ней сегодня.
+     */
+    public static function markHabitDayDone(
+        string $uid,
+        string $habitId,
+        string $localDate,
+        int $timesPerDayHint
+    ): void {
+        $dc = self::dataClass('X5PwaNotifLog');
+        $existing = $dc::getList([
+            'filter' => ['=UF_UID' => $uid, '=UF_HABIT_ID' => $habitId],
+            'limit'  => 1,
+        ])->fetch();
+
+        $now   = self::now();
+        $count = max(1, $timesPerDayHint);
+
+        if ($existing) {
+            $dc::update((int)$existing['ID'], [
+                'UF_NOTIFIED_AT' => $now,
+                'UF_TODAY_COUNT' => $count,
+                'UF_TODAY_DATE'  => $localDate,
+            ]);
+        } else {
+            $dc::add([
+                'UF_UID'         => $uid,
+                'UF_HABIT_ID'    => $habitId,
+                'UF_NOTIFIED_AT' => $now,
+                'UF_TODAY_COUNT' => $count,
+                'UF_TODAY_DATE'  => $localDate,
+            ]);
+        }
+    }
+
     public static function getNotifState(string $uid, string $habitId, ?string $localDate = null): array
     {
         $dc = self::dataClass('X5PwaNotifLog');
@@ -892,12 +988,6 @@ class Storage
 
     // ───────── Consent (Согласие на обработку ПД) ─────────
 
-    /**
-     * Сохраняет согласие пользователя: актуальное состояние в UidBindings
-     * + запись в историю X5PwaConsentLog.
-     *
-     * @return array{ok:bool,reason:?string,granted:bool,serverAt:?string}
-     */
     public static function saveConsent(string $uid, bool $granted, string $localDt, string $source = 'app'): array
     {
         $dc  = self::dataClass('X5PwaUidBindings');
@@ -920,7 +1010,6 @@ class Storage
             return ['ok' => false, 'reason' => 'DB_ERROR', 'granted' => false, 'serverAt' => null];
         }
 
-        // История (не критично, но полезно для аудита)
         try {
             $logDc = self::dataClass('X5PwaConsentLog');
             $logDc::add([
@@ -947,9 +1036,6 @@ class Storage
         ];
     }
 
-    /**
-     * @return array{granted:bool,hasConsent:bool,serverAt:?string,localDt:?string}
-     */
     public static function getConsent(string $uid): array
     {
         $dc  = self::dataClass('X5PwaUidBindings');
@@ -986,9 +1072,6 @@ class Storage
         ];
     }
 
-    /**
-     * История согласий по пользователю (для админки/аудита).
-     */
     public static function getConsentHistory(string $uid, int $limit = 100): array
     {
         try {
@@ -1018,10 +1101,6 @@ class Storage
         return $h !== '' ? $h : null;
     }
 
-    /**
-     * @return array{ok:bool,reason:?string,habitId:?string,selectedAt:?string}
-     *   reason: OK | ALREADY_SELECTED | UID_NOT_FOUND | DB_ERROR
-     */
     public static function selectHabit(string $uid, string $habitId): array
     {
         $dc  = self::dataClass('X5PwaUidBindings');
