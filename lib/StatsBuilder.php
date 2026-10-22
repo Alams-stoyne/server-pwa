@@ -14,12 +14,14 @@ class StatsBuilder
     public static function buildGlobal(): array
     {
         return [
-            'USERS'         => self::countUidBindings(),
-            'LECTURES_READ' => self::countLectureReads(),
-            'TASKS_DONE'    => self::countTaskCompletions(),
-            'HABITS_DONE'   => self::countHabitLogs(),
-            'TOP_THEME'     => self::findTopTheme(),
-            'UPDATED_AT'    => (new \Bitrix\Main\Type\DateTime())->toString(),
+            'USERS'            => self::countUidBindings(),
+            'LECTURES_READ'    => self::countLectureReads(),
+            'TASKS_DONE'       => self::countTaskCompletions(),
+            'HABITS_DONE'      => self::countHabitLogs(),
+            'EVENTS_VISITED'   => self::countEventActions(),
+            'EVENTS_CONFIRMED' => self::countEventActionsConfirmed(),
+            'TOP_THEME'        => self::findTopTheme(),
+            'UPDATED_AT'       => (new \Bitrix\Main\Type\DateTime())->toString(),
         ];
     }
 
@@ -31,7 +33,6 @@ class StatsBuilder
         $taskKeys  = Storage::getTasks($uid);
         $habitData = Storage::getHabits($uid);
 
-        // ─── Резолвим настоящие направления и бакеты лекций ───
         $buckets    = self::resolveLectureBuckets($reads);
         $themeCodes = ThemesResolver::getAllCodes();
         if (!$themeCodes) $themeCodes = ['energy', 'antistress', 'body', 'balance'];
@@ -63,7 +64,6 @@ class StatsBuilder
                 $byTheme['unknown']++;
             }
 
-            // Активность по датам — поддерживаем оба формата
             if (preg_match('/-(\d{4}-\d{2}-\d{2})$/', $dbKey, $m)) {
                 $activeCounts[$m[1]] = ($activeCounts[$m[1]] ?? 0) + 1;
             } elseif (preg_match('#:(\d{4}-\d{2}-\d{2}):#', $dbKey, $m)) {
@@ -78,7 +78,6 @@ class StatsBuilder
             }
         }
 
-        // ─── Привычки: реальный список из IB ───
         $allHabits    = HabitsBuilder::getAll();
         $habitTitles  = [];
         $byHabit      = [];
@@ -106,7 +105,6 @@ class StatsBuilder
             }
         }
 
-        // ─── Streak ───
         $streak = 0;
         $cursor = new \DateTime('now', new \DateTimeZone('UTC'));
         $guard  = 0;
@@ -115,7 +113,6 @@ class StatsBuilder
             $cursor->modify('-1 day');
         }
 
-        // ─── Week ───
         $week = [];
         for ($i = 6; $i >= 0; $i--) {
             $d = new \DateTime('now', new \DateTimeZone('UTC'));
@@ -124,13 +121,11 @@ class StatsBuilder
             $week[] = ['date' => $date, 'count' => $activeCounts[$date] ?? 0];
         }
 
-        // ─── Названия направлений ───
         $themeTitles = [];
         foreach (ThemesBuilder::getAll() as $t) {
             $themeTitles[(string)$t['id']] = (string)$t['name'];
         }
 
-        // ─── Шаги ───
         $stepsSummary = [];
         try {
             $stepsSummary = StepsBuilder::getSummary($uid);
@@ -138,9 +133,10 @@ class StatsBuilder
             $stepsSummary = [];
         }
 
-        // ─── Согласие и выбранная привычка ───
         $consent       = Storage::getConsent($uid);
         $selectedHabit = Storage::getSelectedHabit($uid);
+
+        $eventStats = Storage::getEventStatsForUid($uid);
 
         return [
             'LECTURES_READ'    => count($reads),
@@ -161,7 +157,11 @@ class StatsBuilder
             'HABITS'           => $habitData,
             'STEPS'            => $stepsSummary,
 
-            // Плоские поля для удобства
+            'EVENTS_VISITED'   => (int)$eventStats['visited'],
+            'EVENTS_CONFIRMED' => (int)$eventStats['confirmed'],
+
+            'REWARDS_BALANCE'  => RewardsBuilder::getBalance($uid),
+
             'CONSENT'          => $consent['granted'],
             'CONSENT_AT'       => $consent['serverAt'],
             'CONSENT_LOCAL_DT' => $consent['localDt'],
@@ -170,24 +170,10 @@ class StatsBuilder
         ];
     }
 
-    /**
-     * Преобразует массив UF_LECTURE_ID → карту {key → bucket}.
-     *
-     * bucket:
-     *   'general'          — общая лекция
-     *   'charging'         — зарядка
-     *   'theme:{code}'     — лекция по направлению
-     *   'unknown'          — не удалось определить
-     *
-     * Поддерживает два формата ключей:
-     *   • новый:   {elementId}-{YYYY-MM-DD}
-     *   • legacy:  lecture-{theme}:{YYYY-MM-DD}:{suffix}
-     */
     public static function resolveLectureBuckets(array $reads): array
     {
         $result = [];
 
-        // legacy — без запросов
         $lookupIds = [];
         foreach ($reads as $r) {
             $r = (string)$r;
@@ -209,8 +195,8 @@ class StatsBuilder
 
         if (!$lookupIds) return $result;
 
-        $found           = []; // elementId → 'general'|'charging'|'theme'
-        $themeByElement  = []; // elementId → code
+        $found           = [];
+        $themeByElement  = [];
         $ids             = array_keys($lookupIds);
 
         $ibGeneral  = (int)Settings::iblockId('general_lectures');
@@ -275,11 +261,6 @@ class StatsBuilder
 
     // ───────── Users list ─────────
 
-    /**
-     * Пагинированный список с фильтрами.
-     *
-     * @return array{rows:array,total:int,page:int,perPage:int,pages:int}
-     */
     public static function listUsers(array $params = []): array
     {
         $paginated = Storage::listUidBindings($params);
@@ -389,6 +370,35 @@ class StatsBuilder
             'runtime' => [new ExpressionField('CNT', 'COUNT(*)')],
         ])->fetch();
         return (int)($row['CNT'] ?? 0);
+    }
+
+    private static function countEventActions(): int
+    {
+        try {
+            $dc  = Storage::dataClass('X5PwaEventActions');
+            $row = $dc::getList([
+                'select'  => ['CNT'],
+                'runtime' => [new ExpressionField('CNT', 'COUNT(*)')],
+            ])->fetch();
+            return (int)($row['CNT'] ?? 0);
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    private static function countEventActionsConfirmed(): int
+    {
+        try {
+            $dc  = Storage::dataClass('X5PwaEventActions');
+            $row = $dc::getList([
+                'select'  => ['CNT'],
+                'filter'  => ['!UF_CONFIRMED_AT' => false],
+                'runtime' => [new ExpressionField('CNT', 'COUNT(*)')],
+            ])->fetch();
+            return (int)($row['CNT'] ?? 0);
+        } catch (\Throwable $e) {
+            return 0;
+        }
     }
 
     private static function findTopTheme(): string

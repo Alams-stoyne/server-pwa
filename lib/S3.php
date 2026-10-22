@@ -3,6 +3,8 @@ namespace X5\Pwa;
 
 class S3
 {
+    private const DEFAULT_CACHE = 'public, max-age=3600';
+
     public static function available(): bool
     {
         return class_exists(\Aws\S3\S3Client::class);
@@ -29,10 +31,33 @@ class S3
     }
 
     /**
-     * @return array{ok:bool, key:string, message:?string}
+     * Cache-Control по ключу файла.
+     *
+     * Политика:
+     *   • events/YYYY-MM-DD.json  — 10 минут (админ может добавить событие
+     *     «на сегодня», клиент должен увидеть его быстро);
+     *   • stats/global.json       — 1 минута;
+     *   • manifest.json           — 1 минута;
+     *   • всё остальное           — 1 час.
      */
-    public static function upload(string $key, string $content, string $contentType = 'application/json'): array
+    public static function cacheControlForKey(string $key): string
     {
+        $key = ltrim($key, '/');
+
+        if (preg_match('#^events/\d{4}-\d{2}-\d{2}\.json$#', $key)) return 'public, max-age=600';
+        if (preg_match('#^events/#', $key))                       return 'public, max-age=600';
+        if ($key === 'stats/global.json')                         return 'public, max-age=60';
+        if ($key === 'manifest.json')                             return 'public, max-age=60';
+
+        return self::DEFAULT_CACHE;
+    }
+
+    public static function upload(
+        string $key,
+        string $content,
+        string $contentType = 'application/json',
+        ?string $cacheControl = null
+    ): array {
         if (!Settings::getBool('s3_enabled')) {
             return ['ok' => false, 'key' => $key,
                     'message' => 'S3 disabled (включите галочку «Включить S3»)'];
@@ -62,16 +87,16 @@ class S3
             $prefix  = trim((string)$cfg['prefix'], '/');
             $fullKey = ($prefix ? $prefix . '/' : '') . ltrim($key, '/');
 
-            // Не передаём ACL — Yandex Cloud его не поддерживает и вернёт
-            // AccessDenied. Публичность объекта настраивается на бакете.
+            $cc = $cacheControl ?? self::cacheControlForKey($key);
+
             $client->putObject([
-                'Bucket'      => $cfg['bucket'],
-                'Key'         => $fullKey,
-                'Body'        => $content,
-                'ContentType' => $contentType,
+                'Bucket'       => $cfg['bucket'],
+                'Key'          => $fullKey,
+                'Body'         => $content,
+                'ContentType'  => $contentType,
+                'CacheControl' => $cc,
             ]);
 
-            // Локальный кэш
             $localPath = self::localCachePath($fullKey);
             @mkdir(dirname($localPath), 0775, true);
             @file_put_contents($localPath, $content);
@@ -90,7 +115,7 @@ class S3
     public static function readLocal(string $key): ?string
     {
         $cfg = Settings::s3();
-        $prefix  = trim((string)$cfg['prefix'], '/');
+        $prefix  = trim((string)($cfg['prefix'] ?? ''), '/');
         $fullKey = ($prefix ? $prefix . '/' : '') . ltrim($key, '/');
         $p = self::localCachePath($fullKey);
         return is_file($p) ? (string)file_get_contents($p) : null;

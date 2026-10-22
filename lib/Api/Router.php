@@ -60,9 +60,17 @@ class Router
         if ($path === '/consent/send'   && $method === 'POST') return [Consent::send($body), 200];
         if ($path === '/consent/status' && $method === 'POST') return [Consent::status($body), 200];
 
-        // ─── Привычки: чтение выбора + запись выбора ───
+        // ─── Привычки ───
         if ($path === '/habits/selection' && $method === 'POST') return [Habits::selection($body), 200];
         if ($path === '/habits/select'    && $method === 'POST') return [Habits::select($body), 200];
+
+        // ─── События дня ───
+        if ($path === '/events/status' && $method === 'POST') return [Events::status($body), 200];
+        if ($path === '/events/action' && $method === 'POST') return [Events::action($body), 200];
+
+        // ─── Награды ───
+        if ($path === '/rewards/balance' && $method === 'POST') return [Rewards::balance($body), 200];
+        if ($path === '/rewards/history' && $method === 'POST') return [Rewards::history($body), 200];
 
         // ─── Техподдержка ───
         if ($path === '/support/ticket/create'        && $method === 'POST') return [Support::create($body),      200];

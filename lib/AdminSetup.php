@@ -20,6 +20,8 @@ class AdminSetup
             'x5_pwa_support.php'       => ['path' => 'admin/support.php',            'wrapper' => 'plain'],
             'x5_pwa_support_detail.php'=> ['path' => 'admin/support_detail.php',     'wrapper' => 'plain'],
             'x5_pwa_support_export.php'=> ['path' => 'admin/export_support_csv.php', 'wrapper' => 'plain'],
+            'x5_pwa_rewards.php'       => ['path' => 'admin/rewards.php',            'wrapper' => 'plain'],
+            'x5_pwa_rewards_export.php'=> ['path' => 'admin/rewards_export.php',     'wrapper' => 'plain'],
         ];
     }
 

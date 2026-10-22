@@ -8,10 +8,8 @@ class Dumper
     private const STATS_INTERVAL_DEFAULT = 600;
     private const STATS_INTERVAL_MIN     = 60;
 
-    /** Минимальный интервал между принудительными пересборками (сек). */
     private const REGEN_THROTTLE_SEC     = 30;
 
-    /** Защита от рекурсии / параллельного запуска внутри одного процесса. */
     private static bool $inProgress = false;
 
     private static function log(string $msg, string $label = 'Dumper debug'): void
@@ -28,7 +26,7 @@ class Dumper
     {
         $keys = ['general_lectures', 'charging', 'theme_lectures', 'tasks',
                  'themes', 'quiz_questions', 'habits', 'today_widgets',
-                 'tutorial', 'reflections'];
+                 'tutorial', 'reflections', 'events'];
         $out = [];
         foreach ($keys as $k) {
             $id = Settings::iblockId($k);
@@ -52,15 +50,11 @@ class Dumper
             return;
         }
 
-        // Защита от рекурсии: regenerateAll сам может дернуть ИБ/события
         if (self::$inProgress) {
             self::log("  → skipped: regenerateAll already in progress");
             return;
         }
 
-        // Throttle: если пересобирали < REGEN_THROTTLE_SEC назад — пропускаем.
-        // Данные не «потеряются»: следующий cron/агент пересоберёт,
-        // а между тем старые дампы остаются валидными.
         $lastRunAgo = microtime(true) - (float)Settings::get('last_regen_started_at', '0');
         if ($lastRunAgo < self::REGEN_THROTTLE_SEC) {
             self::log("  → throttled: last regen " . round($lastRunAgo, 1) . "s ago");
@@ -128,12 +122,6 @@ class Dumper
         return ['ok' => false, 'error' => $r['message'], 'elapsed' => $elapsed];
     }
 
-    /**
-     * Пересобрать только дампы шагомера.
-     *
-     * @param bool $includeAllDaily — 14 дней назад; false — только текущий + сегодня
-     * @return array{sent:int,failed:int,errors:array,elapsed:float}
-     */
     public static function regenerateStepLeaderboards(bool $includeAllDaily = true): array
     {
         $startTime = microtime(true);
@@ -190,6 +178,7 @@ class Dumper
             'today_widgets'    => Settings::iblockId('today_widgets'),
             'tutorial'         => Settings::iblockId('tutorial'),
             'reflections'      => Settings::iblockId('reflections'),
+            'events'           => Settings::iblockId('events'),
         ];
         self::log('IB IDs: ' . json_encode($ibIds));
 
@@ -250,7 +239,7 @@ class Dumper
         $map = [];
         $byCategory = [
             'lectures' => 0, 'tasks' => 0, 'stats' => 0,
-            'config'   => 0, 'steps' => 0, 'empty' => 0,
+            'config'   => 0, 'steps' => 0, 'events' => 0, 'empty' => 0,
         ];
 
         foreach (['general', 'charging'] as $bucket) {
@@ -302,6 +291,25 @@ class Dumper
             $byCategory['config'] = 5;
         } catch (\Throwable $e) {
             self::log('config/* FAILED: ' . $e->getMessage(), 'Dumper config');
+        }
+
+        // ── События дня: по одному файлу на дату (как лекции) ──
+        try {
+            $eventDates = EventsBuilder::getCdnDates();
+            foreach ($eventDates as $eventDate) {
+                $key = "events/{$eventDate}.json";
+                $map[$key] = EventsBuilder::getForCdn($eventDate);
+                $byCategory['events']++;
+                if (empty($map[$key])) $byCategory['empty']++;
+            }
+            self::log(sprintf(
+                'events: dates=%d (from %s to %s)',
+                count($eventDates),
+                $eventDates ? $eventDates[0] : '-',
+                $eventDates ? $eventDates[count($eventDates) - 1] : '-'
+            ));
+        } catch (\Throwable $e) {
+            self::log('events/* FAILED: ' . $e->getMessage(), 'Dumper events');
         }
 
         // ── Статистика ──

@@ -208,6 +208,17 @@ class StepsBuilder
             return ['RESULT' => 'SAVE_ERROR', 'MESSAGE' => 'Не удалось сохранить запись.'];
         }
 
+        // ─── Награда за отправку шагов ───
+        try {
+            RewardsBuilder::awardStepsSent($uid, $localDate);
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'award steps sent failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
+                'StepsBuilder::send',
+                '/x5.pwa.log'
+            );
+        }
+
         return [
             'RESULT'          => 'OK',
             'SERVER_DATETIME' => gmdate('Y-m-d\TH:i:s\Z'),
@@ -278,22 +289,14 @@ class StepsBuilder
         }
     }
 
-    /**
-     * Полный пересчёт для всех пользователей.
-     * Используется в миграции и в админке, если что-то рассинхронизировалось.
-     *
-     * @return array{processed:int,elapsed:float}
-     */
     public static function recalcAllTotals(): array
     {
         $start = microtime(true);
         $conn  = Application::getConnection();
         $sqlHelper = $conn->getSqlHelper();
 
-        // 1. Обнуляем всем
         $conn->queryExecute("UPDATE x5_pwa_uid_bindings SET UF_TOTAL_STEPS = 0");
 
-        // 2. Агрегат по одобренным записям
         $rows = $conn->query(
             "SELECT UF_UID, SUM(UF_STEPS) AS T
              FROM x5_pwa_steps
@@ -301,7 +304,6 @@ class StepsBuilder
              GROUP BY UF_UID"
         )->fetchAll();
 
-        // 3. UPDATE пачками (batched в один SQL через CASE)
         $updated = 0;
         foreach (array_chunk($rows, 500) as $chunk) {
             if (!$chunk) continue;
@@ -353,7 +355,6 @@ class StepsBuilder
         $sqlHelper = $conn->getSqlHelper();
         $safeUid = $sqlHelper->forSql($uid);
 
-        // 1. Total — из кеша
         $b = $conn->query(
             "SELECT UF_TOTAL_STEPS FROM x5_pwa_uid_bindings
              WHERE UF_UID = '{$safeUid}' LIMIT 1"
@@ -370,14 +371,12 @@ class StepsBuilder
             $userTotal = (int)($sumRow['T'] ?? 0);
         }
 
-        // 2. Total users
         $totalUsersRow = $conn->query(
             "SELECT COUNT(*) AS C FROM x5_pwa_uid_bindings
              WHERE UF_TOTAL_STEPS > 0"
         )->fetch();
         $totalUsers = (int)($totalUsersRow['C'] ?? 0);
 
-        // 3. Rank
         $rank = 0;
         if ($userTotal > 0) {
             $higherRow = $conn->query(
@@ -387,7 +386,6 @@ class StepsBuilder
             $rank = (int)($higherRow['C'] ?? 0) + 1;
         }
 
-        // 4. Today
         $localDate = self::userLocalDate($uid);
         $todayRow = $conn->query(
             "SELECT COALESCE(SUM(UF_STEPS), 0) AS T
@@ -398,7 +396,6 @@ class StepsBuilder
         )->fetch();
         $todaySteps = (int)($todayRow['T'] ?? 0);
 
-        // 5. Daily avg
         $avgRow = $conn->query(
             "SELECT COUNT(DISTINCT UF_LOCAL_DATE) AS DAYS,
                     COALESCE(SUM(UF_STEPS), 0) AS TOTAL
@@ -410,7 +407,6 @@ class StepsBuilder
             ? (int)round(((int)($avgRow['TOTAL'] ?? 0)) / $activeDays)
             : 0;
 
-        // 6. Top percent
         $topPercent = 0;
         if ($totalUsers > 0 && $rank > 0) {
             $topPercent = max(1, (int)round(($rank / $totalUsers) * 100));
@@ -631,9 +627,6 @@ class StepsBuilder
         ];
     }
 
-    /**
-     * Одиночная смена статуса + пересчёт кеша totals для этого пользователя.
-     */
     public static function setStatus(int $id, string $status, int $adminId, string $reason = ''): bool
     {
         if (!in_array($status, ['Y', 'R', 'N'], true)) return false;
@@ -643,6 +636,7 @@ class StepsBuilder
         if (!$row) return false;
 
         $uid = (string)$row['UF_UID'];
+        $stepsLocalDate = (string)($row['UF_LOCAL_DATE'] ?? '');
 
         $res = $dc::update($id, [
             'UF_STATUS'        => $status,
@@ -653,17 +647,24 @@ class StepsBuilder
 
         if ($res->isSuccess()) {
             self::recalcUserTotal($uid);
+
+            // ─── Награда за approve ───
+            if ($status === 'Y' && $stepsLocalDate !== '') {
+                try {
+                    RewardsBuilder::awardStepsApproved($uid, $stepsLocalDate);
+                } catch (\Throwable $e) {
+                    \Bitrix\Main\Diag\Debug::writeToFile(
+                        'award steps approved failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
+                        'StepsBuilder::setStatus',
+                        '/x5.pwa.log'
+                    );
+                }
+            }
         }
 
         return $res->isSuccess();
     }
 
-    /**
-     * Пакетная смена статуса. Один агрегат по всем UID + N UPDATE.
-     * Для групповых действий в админке.
-     *
-     * @return int — сколько записей успешно обновлено
-     */
     public static function setStatusBatch(array $ids, string $status, int $adminId, string $reason = ''): int
     {
         if (!in_array($status, ['Y', 'R', 'N'], true)) return 0;
@@ -674,7 +675,7 @@ class StepsBuilder
         $dc = Storage::dataClass('X5PwaSteps');
 
         $rows = $dc::getList([
-            'select' => ['ID', 'UF_UID'],
+            'select' => ['ID', 'UF_UID', 'UF_LOCAL_DATE'],
             'filter' => ['=ID' => $ids],
         ])->fetchAll();
 
@@ -684,6 +685,7 @@ class StepsBuilder
         foreach ($rows as $r) {
             $rowId = (int)$r['ID'];
             $uid   = (string)$r['UF_UID'];
+            $rowLocalDate = (string)($r['UF_LOCAL_DATE'] ?? '');
             $touchedUids[$uid] = true;
 
             $res = $dc::update($rowId, [
@@ -692,7 +694,22 @@ class StepsBuilder
                 'UF_MODERATED_BY'  => $adminId,
                 'UF_REJECT_REASON' => $status === 'R' ? mb_substr($reason, 0, 255) : '',
             ]);
-            if ($res->isSuccess()) $processed++;
+
+            if ($res->isSuccess()) {
+                $processed++;
+
+                if ($status === 'Y' && $rowLocalDate !== '') {
+                    try {
+                        RewardsBuilder::awardStepsApproved($uid, $rowLocalDate);
+                    } catch (\Throwable $e) {
+                        \Bitrix\Main\Diag\Debug::writeToFile(
+                            'award steps approved failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
+                            'StepsBuilder::setStatusBatch',
+                            '/x5.pwa.log'
+                        );
+                    }
+                }
+            }
         }
 
         if ($touchedUids) {

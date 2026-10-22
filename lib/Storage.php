@@ -11,7 +11,6 @@ Loader::includeModule('highloadblock');
 
 class Storage
 {
-    /** Смещение таймзоны по умолчанию (MSK = +180 мин от UTC). */
     public const DEFAULT_TZ_OFFSET_MIN = 180;
 
     private static array $dataClasses = [];
@@ -238,7 +237,7 @@ class Storage
             $deleted['X5PwaSteps_files'] = 'ERR: ' . $e->getMessage();
         }
 
-        // 2. Тикеты поддержки + их сообщения + файлы сообщений
+        // 2. Тикеты поддержки + сообщения + файлы
         try {
             $ticketsDc = self::dataClass('X5PwaSupportTickets');
             $tickets = $ticketsDc::getList([
@@ -271,7 +270,7 @@ class Storage
             $deleted['X5PwaSupportMessages'] = 'ERR: ' . $e->getMessage();
         }
 
-        // 3. Остальные таблицы
+        // 3. Остальные таблицы (включая RewardLog)
         $sources = [
             'X5PwaLectureReads'    => 'UF_UID',
             'X5PwaTaskCompletions' => 'UF_UID',
@@ -283,6 +282,8 @@ class Storage
             'X5PwaSteps'           => 'UF_UID',
             'X5PwaConsentLog'      => 'UF_UID',
             'X5PwaSupportTickets'  => 'UF_UID',
+            'X5PwaEventActions'    => 'UF_UID',
+            'X5PwaRewardLog'       => 'UF_UID',
             'X5PwaUidBindings'     => 'UF_UID',
         ];
 
@@ -336,6 +337,7 @@ class Storage
             ['x5_pwa_lecture_reads',    'UF_READ_AT'],
             ['x5_pwa_task_completions', 'UF_COMPLETED_AT'],
             ['x5_pwa_habit_logs',       'UF_COMPLETED_AT'],
+            ['x5_pwa_event_actions',    'UF_CLICKED_AT'],
         ];
 
         foreach ($sources as [$table, $col]) {
@@ -347,19 +349,23 @@ class Storage
                     WHERE UF_UID IN ({$inList})
                     GROUP BY UF_UID";
 
-            $res = $conn->query($sql);
-            while ($row = $res->fetch()) {
-                $uid = (string)$row['UF_UID'];
-                $dt  = (string)$row['MAXDT'];
-                if ($dt === '' || $dt === '0000-00-00 00:00:00') continue;
+            try {
+                $res = $conn->query($sql);
+                while ($row = $res->fetch()) {
+                    $uid = (string)$row['UF_UID'];
+                    $dt  = (string)$row['MAXDT'];
+                    if ($dt === '' || $dt === '0000-00-00 00:00:00') continue;
 
-                $ts = strtotime($dt);
-                if ($ts <= 0) continue;
-                $ms = $ts * 1000;
+                    $ts = strtotime($dt);
+                    if ($ts <= 0) continue;
+                    $ms = $ts * 1000;
 
-                if (!isset($out[$uid]) || $ms > $out[$uid]) {
-                    $out[$uid] = $ms;
+                    if (!isset($out[$uid]) || $ms > $out[$uid]) {
+                        $out[$uid] = $ms;
+                    }
                 }
+            } catch (\Throwable $e) {
+                // Таблица может отсутствовать при первом хите
             }
         }
 
@@ -397,12 +403,12 @@ class Storage
         if (!empty($params['active_from'])) {
             try {
                 $filter['>=UF_LAST_SEEN_AT'] = new DateTime((string)$params['active_from']);
-            } catch (\Throwable $e) { /* ignore bad date */ }
+            } catch (\Throwable $e) { /* ignore */ }
         }
         if (!empty($params['active_to'])) {
             try {
                 $filter['<=UF_LAST_SEEN_AT'] = new DateTime((string)$params['active_to']);
-            } catch (\Throwable $e) { /* ignore bad date */ }
+            } catch (\Throwable $e) { /* ignore */ }
         }
 
         if (empty($params['active_from']) && empty($params['active_to']) && !empty($params['activeDays'])) {
@@ -435,9 +441,7 @@ class Storage
 
         $noPaging = !empty($params['noPaging']) || (int)($params['perPage'] ?? -1) === 0;
         $page     = max(1, (int)($params['page'] ?? 1));
-        $perPage  = $noPaging
-            ? 0
-            : max(1, min(200, (int)($params['perPage'] ?? 50)));
+        $perPage  = $noPaging ? 0 : max(1, min(200, (int)($params['perPage'] ?? 50)));
         $offset   = $noPaging ? 0 : ($page - 1) * $perPage;
 
         $totalRow = $dc::getList([
@@ -447,10 +451,7 @@ class Storage
         ])->fetch();
         $total = (int)($totalRow['CNT'] ?? 0);
 
-        $queryParams = [
-            'filter' => $filter,
-            'order'  => $order,
-        ];
+        $queryParams = ['filter' => $filter, 'order' => $order];
         if (!$noPaging) {
             $queryParams['limit']  = $perPage;
             $queryParams['offset'] = $offset;
@@ -480,10 +481,7 @@ class Storage
     public static function getUidBinding(string $uid): ?array
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc::getList([
-            'filter' => ['=UF_UID' => $uid],
-            'limit'  => 1,
-        ])->fetch();
+        $row = $dc::getList(['filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();
         return $row ?: null;
     }
 
@@ -540,9 +538,7 @@ class Storage
     public static function getState(string $uid): ?array
     {
         $dc = self::dataClass('X5PwaUserStates');
-        $row = $dc::getList([
-            'filter' => ['=UF_UID' => $uid], 'limit' => 1,
-        ])->fetch();
+        $row = $dc::getList(['filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();
         if (!$row) return null;
         $s = $row['UF_STATE'] ?? null;
         return $s ? (json_decode($s, true) ?: null) : null;
@@ -550,18 +546,12 @@ class Storage
 
     public static function saveState(string $uid, $state): void
     {
-        // ─── Защита от подмены сервер-authoritative полей ───
-        //   CONSENT и HABIT_SELECTED — управляются ТОЛЬКО через
-        //   /consent/send и /habits/select. Клиент не может
-        //   «протащить» их сюда через тело POST /state.
         if (is_array($state)) {
-            unset($state['CONSENT'], $state['HABIT_SELECTED']);
+            unset($state['CONSENT'], $state['HABIT_SELECTED'], $state['REWARDS']);
         }
 
         $dc = self::dataClass('X5PwaUserStates');
-        $existing = $dc::getList([
-            'filter' => ['=UF_UID' => $uid], 'limit' => 1,
-        ])->fetch();
+        $existing = $dc::getList(['filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();
         $value = $state === null ? '' : json_encode($state, JSON_UNESCAPED_UNICODE);
 
         if ($existing) {
@@ -683,7 +673,7 @@ class Storage
         ];
     }
 
-    // ───────── Reads ─────────
+    // ───────── Reads / Tasks / Habits ─────────
 
     public static function getReads(string $uid): array
     {
@@ -711,8 +701,6 @@ class Storage
         ]);
     }
 
-    // ───────── Tasks ─────────
-
     public static function getTasks(string $uid): array
     {
         $dc = self::dataClass('X5PwaTaskCompletions');
@@ -738,8 +726,6 @@ class Storage
             'UF_COMPLETED_AT' => self::now(),
         ]);
     }
-
-    // ───────── Habits ─────────
 
     public static function getHabits(string $uid): array
     {
@@ -773,9 +759,7 @@ class Storage
     public static function getSubscription(string $uid): ?array
     {
         $dc = self::dataClass('X5PwaPushSubs');
-        $row = $dc::getList([
-            'filter' => ['=UF_UID' => $uid], 'limit' => 1,
-        ])->fetch();
+        $row = $dc::getList(['filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();
         if (!$row) return null;
         return [
             'endpoint' => $row['UF_ENDPOINT'],
@@ -786,9 +770,7 @@ class Storage
     public static function saveSubscription(string $uid, array $subscription): void
     {
         $dc = self::dataClass('X5PwaPushSubs');
-        $existing = $dc::getList([
-            'filter' => ['=UF_UID' => $uid], 'limit' => 1,
-        ])->fetch();
+        $existing = $dc::getList(['filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();
         $data = [
             'UF_UID'        => $uid,
             'UF_ENDPOINT'   => (string)($subscription['endpoint'] ?? ''),
@@ -810,7 +792,7 @@ class Storage
     public static function listSubscriptions(): array
     {
         $dc = self::dataClass('X5PwaPushSubs');
-        return $dc::getList()->fetchAll();
+        return $dc->getList()->fetchAll();
     }
 
     // ───────── Notification log ─────────
@@ -847,10 +829,6 @@ class Storage
         }
     }
 
-    /**
-     * Помечает в NotifLog, что норма по привычке на сегодня выполнена,
-     * чтобы Scheduler гарантированно больше не отправлял напоминания по ней сегодня.
-     */
     public static function markHabitDayDone(
         string $uid,
         string $habitId,
@@ -946,6 +924,7 @@ class Storage
             'UF_TARGET'     => (string)($entry['target'] ?? ''),
             'UF_TITLE'      => (string)($entry['title']  ?? ''),
             'UF_BODY'       => (string)($entry['body']   ?? ''),
+            'UF_URL'        => mb_substr((string)($entry['url'] ?? ''), 0, 500),
             'UF_STATUS'     => (string)($entry['status'] ?? ''),
             'UF_CREATED_AT' => self::now(),
         ]);
@@ -986,16 +965,12 @@ class Storage
         else $dc::add(['UF_KEY' => $key, 'UF_TIMESTAMPS' => $value]);
     }
 
-    // ───────── Consent (Согласие на обработку ПД) ─────────
+    // ───────── Consent ─────────
 
     public static function saveConsent(string $uid, bool $granted, string $localDt, string $source = 'app'): array
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc::getList([
-            'select' => ['ID'],
-            'filter' => ['=UF_UID' => $uid],
-            'limit'  => 1,
-        ])->fetch();
+        $row = $dc::getList(['select' => ['ID'], 'filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();
         if (!$row) return ['ok' => false, 'reason' => 'UID_NOT_FOUND', 'granted' => false, 'serverAt' => null];
 
         $now = self::now();
@@ -1086,7 +1061,7 @@ class Storage
         }
     }
 
-    // ───────── Выбор привычки (одна на пользователя, без смены) ─────────
+    // ───────── Selected habit ─────────
 
     public static function getSelectedHabit(string $uid): ?string
     {
@@ -1139,6 +1114,306 @@ class Storage
             'reason'     => 'OK',
             'habitId'    => $habitId,
             'selectedAt' => $now->format('Y-m-d\TH:i:sP'),
+        ];
+    }
+
+    // ───────── EventActions ─────────
+
+    public static function getEventAction(string $uid, string $eventId): ?array
+    {
+        try {
+            $dc = self::dataClass('X5PwaEventActions');
+            $row = $dc::getList([
+                'filter' => ['=UF_UID' => $uid, '=UF_EVENT_ID' => $eventId],
+                'limit'  => 1,
+            ])->fetch();
+            return $row ?: null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    public static function getEventActionsForUid(string $uid, ?string $eventId = null): array
+    {
+        try {
+            $dc = self::dataClass('X5PwaEventActions');
+            $filter = ['=UF_UID' => $uid];
+            if ($eventId !== null) $filter['=UF_EVENT_ID'] = $eventId;
+
+            return $dc::getList([
+                'filter' => $filter,
+                'order'  => ['UF_CLICKED_AT' => 'DESC', 'ID' => 'DESC'],
+            ])->fetchAll();
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    public static function upsertEventClick(string $uid, string $eventId, array $event): array
+    {
+        $dc = self::dataClass('X5PwaEventActions');
+        $existing = $dc::getList([
+            'filter' => ['=UF_UID' => $uid, '=UF_EVENT_ID' => $eventId],
+            'limit'  => 1,
+        ])->fetch();
+
+        $now = self::now();
+
+        if ($existing) {
+            if (!empty($existing['UF_CLICKED_AT'])) {
+                try {
+                    return ['ok' => true, 'clickedAt' => $existing['UF_CLICKED_AT']->format('Y-m-d\TH:i:sP')];
+                } catch (\Throwable $e) {
+                    return ['ok' => true, 'clickedAt' => null];
+                }
+            }
+            $res = $dc::update((int)$existing['ID'], ['UF_CLICKED_AT' => $now]);
+            if (!$res->isSuccess()) return ['ok' => false, 'clickedAt' => null];
+            return ['ok' => true, 'clickedAt' => $now->format('Y-m-d\TH:i:sP')];
+        }
+
+        $res = $dc::add([
+            'UF_UID'           => $uid,
+            'UF_EVENT_ID'      => mb_substr($eventId, 0, 128),
+            'UF_EVENT_DATE'    => (string)($event['DATE'] ?? ''),
+            'UF_EVENT_TITLE'   => mb_substr((string)($event['NAME'] ?? ''), 0, 255),
+            'UF_REWARD_TEXT'   => mb_substr((string)($event['REWARD_TEXT'] ?? ''), 0, 64),
+            'UF_REWARD_POINTS' => (int)($event['REWARD_POINTS'] ?? 0),
+            'UF_CLICKED_AT'    => $now,
+            'UF_CONFIRMED_AT'  => null,
+            'UF_REWARDED'      => 'N',
+        ]);
+        if (!$res->isSuccess()) return ['ok' => false, 'clickedAt' => null];
+
+        return ['ok' => true, 'clickedAt' => $now->format('Y-m-d\TH:i:sP')];
+    }
+
+    public static function confirmEventAction(string $uid, string $eventId, array $event): array
+    {
+        $dc = self::dataClass('X5PwaEventActions');
+        $existing = $dc::getList([
+            'select' => ['ID', 'UF_CONFIRMED_AT'],
+            'filter' => ['=UF_UID' => $uid, '=UF_EVENT_ID' => $eventId],
+            'limit'  => 1,
+        ])->fetch();
+
+        if (!$existing) return ['ok' => false, 'confirmedAt' => null];
+
+        if (!empty($existing['UF_CONFIRMED_AT'])) {
+            try {
+                return ['ok' => true, 'confirmedAt' => $existing['UF_CONFIRMED_AT']->format('Y-m-d\TH:i:sP')];
+            } catch (\Throwable $e) {
+                return ['ok' => true, 'confirmedAt' => null];
+            }
+        }
+
+        $now = self::now();
+        $res = $dc::update((int)$existing['ID'], [
+            'UF_CONFIRMED_AT'  => $now,
+            'UF_REWARDED'      => 'Y',
+            'UF_REWARD_TEXT'   => mb_substr((string)($event['REWARD_TEXT'] ?? ''), 0, 64),
+            'UF_REWARD_POINTS' => (int)($event['REWARD_POINTS'] ?? 0),
+            'UF_EVENT_DATE'    => (string)($event['DATE'] ?? ''),
+            'UF_EVENT_TITLE'   => mb_substr((string)($event['NAME'] ?? ''), 0, 255),
+        ]);
+        if (!$res->isSuccess()) return ['ok' => false, 'confirmedAt' => null];
+
+        return ['ok' => true, 'confirmedAt' => $now->format('Y-m-d\TH:i:sP')];
+    }
+
+    public static function getEventStatsForUid(string $uid): array
+    {
+        try {
+            $conn = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safeUid = $sqlHelper->forSql($uid);
+
+            $row = $conn->query(
+                "SELECT COUNT(*) AS TOTAL,
+                        SUM(CASE WHEN UF_CONFIRMED_AT IS NOT NULL THEN 1 ELSE 0 END) AS CONFIRMED
+                 FROM x5_pwa_event_actions
+                 WHERE UF_UID = '{$safeUid}'"
+            )->fetch();
+
+            return [
+                'visited'   => (int)($row['TOTAL'] ?? 0),
+                'confirmed' => (int)($row['CONFIRMED'] ?? 0),
+            ];
+        } catch (\Throwable $e) {
+            return ['visited' => 0, 'confirmed' => 0];
+        }
+    }
+
+    // ───────── Rewards ─────────
+
+    /**
+     * Запись в RewardLog. На duplicate key бросает исключение.
+     */
+    public static function addRewardLog(array $entry): void
+    {
+        $dc = self::dataClass('X5PwaRewardLog');
+        $dc::add([
+            'UF_UID'         => (string)($entry['uid']        ?? ''),
+            'UF_ACTION_TYPE' => (string)($entry['actionType'] ?? ''),
+            'UF_ACTION_ID'   => mb_substr((string)($entry['actionId'] ?? ''), 0, 128),
+            'UF_UNIQUE_KEY'  => mb_substr((string)($entry['uniqueKey'] ?? ''), 0, 32),
+            'UF_POINTS'      => (int)($entry['points']        ?? 0),
+            'UF_TITLE'       => mb_substr((string)($entry['title'] ?? ''), 0, 255),
+            'UF_LOCAL_DATE'  => mb_substr((string)($entry['localDate'] ?? ''), 0, 10),
+            'UF_CREATED_AT'  => self::now(),
+        ]);
+    }
+
+    /**
+     * Баланс из кеша UidBindings.UF_REWARD_BALANCE.
+     * Если поле NULL (старый пользователь, до миграции) — пересчитываем и сохраняем.
+     */
+    public static function getRewardBalance(string $uid): int
+    {
+        try {
+            $dc  = self::dataClass('X5PwaUidBindings');
+            $row = $dc::getList([
+                'select' => ['ID', 'UF_REWARD_BALANCE'],
+                'filter' => ['=UF_UID' => $uid],
+                'limit'  => 1,
+            ])->fetch();
+            if (!$row) return 0;
+
+            if ($row['UF_REWARD_BALANCE'] === null) {
+                return self::recalcRewardBalance($uid);
+            }
+
+            return (int)$row['UF_REWARD_BALANCE'];
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Атомарный инкремент кеша.
+     */
+    public static function incrementRewardBalance(string $uid, int $delta): void
+    {
+        if ($delta === 0) return;
+
+        try {
+            $conn      = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safeUid   = $sqlHelper->forSql($uid);
+            $deltaSafe = (int)$delta;
+
+            $conn->queryExecute(
+                "UPDATE x5_pwa_uid_bindings
+                 SET UF_REWARD_BALANCE = COALESCE(UF_REWARD_BALANCE, 0) + {$deltaSafe}
+                 WHERE UF_UID = '{$safeUid}'"
+            );
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'increment failed uid=' . substr($uid, 0, 12) . '… delta=' . $delta
+                . ': ' . $e->getMessage(),
+                'Storage::incrementRewardBalance',
+                '/x5.pwa.log'
+            );
+        }
+    }
+
+    /**
+     * Пересчитывает баланс из лога (SUM UF_POINTS) и записывает в кеш.
+     */
+    public static function recalcRewardBalance(string $uid): int
+    {
+        try {
+            $conn      = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safeUid   = $sqlHelper->forSql($uid);
+
+            $row = $conn->query(
+                "SELECT COALESCE(SUM(UF_POINTS), 0) AS T
+                 FROM x5_pwa_reward_log
+                 WHERE UF_UID = '{$safeUid}'"
+            )->fetch();
+            $total = (int)($row['T'] ?? 0);
+
+            $conn->queryExecute(
+                "UPDATE x5_pwa_uid_bindings
+                 SET UF_REWARD_BALANCE = {$total}
+                 WHERE UF_UID = '{$safeUid}'"
+            );
+
+            return $total;
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Пагинированная история начислений.
+     *
+     * @return array{items:array,total:int,page:int,perPage:int,pages:int}
+     */
+    public static function getRewardHistory(string $uid, array $params = []): array
+    {
+        try {
+            $dc = self::dataClass('X5PwaRewardLog');
+        } catch (\Throwable $e) {
+            return ['items' => [], 'total' => 0, 'page' => 1, 'perPage' => 50, 'pages' => 1];
+        }
+
+        $filter = ['=UF_UID' => $uid];
+
+        if (!empty($params['type']) && is_string($params['type'])) {
+            $filter['=UF_ACTION_TYPE'] = (string)$params['type'];
+        }
+        if (!empty($params['date_from'])) {
+            $filter['>=UF_LOCAL_DATE'] = (string)$params['date_from'];
+        }
+        if (!empty($params['date_to'])) {
+            $filter['<=UF_LOCAL_DATE'] = (string)$params['date_to'];
+        }
+
+        $noPaging = !empty($params['noPaging']) || (int)($params['perPage'] ?? -1) === 0;
+        $page     = max(1, (int)($params['page'] ?? 1));
+        $perPage  = $noPaging ? 0 : max(1, min(200, (int)($params['perPage'] ?? 50)));
+        $offset   = $noPaging ? 0 : ($page - 1) * $perPage;
+
+        $total = (int)($dc::getList([
+            'select'  => ['CNT'],
+            'filter'  => $filter,
+            'runtime' => [new ExpressionField('CNT', 'COUNT(*)')],
+        ])->fetch()['CNT'] ?? 0);
+
+        $qParams = [
+            'filter' => $filter,
+            'order'  => ['UF_CREATED_AT' => 'DESC', 'ID' => 'DESC'],
+        ];
+        if (!$noPaging) {
+            $qParams['limit']  = $perPage;
+            $qParams['offset'] = $offset;
+        }
+        $rows = $dc::getList($qParams)->fetchAll();
+
+        $items = [];
+        foreach ($rows as $r) {
+            $items[] = [
+                'ID'         => (int)$r['ID'],
+                'TYPE'       => (string)($r['UF_ACTION_TYPE'] ?? ''),
+                'TYPE_TITLE' => RewardsBuilder::typeTitle((string)($r['UF_ACTION_TYPE'] ?? '')),
+                'ACTION_ID'  => (string)($r['UF_ACTION_ID'] ?? ''),
+                'POINTS'     => (int)($r['UF_POINTS'] ?? 0),
+                'TITLE'      => (string)($r['UF_TITLE'] ?? ''),
+                'LOCAL_DATE' => (string)($r['UF_LOCAL_DATE'] ?? ''),
+                'CREATED_AT' => !empty($r['UF_CREATED_AT'])
+                    ? $r['UF_CREATED_AT']->format('Y-m-d\TH:i:sP')
+                    : null,
+            ];
+        }
+
+        return [
+            'items'   => $items,
+            'total'   => $total,
+            'page'    => $page,
+            'perPage' => $perPage,
+            'pages'   => $noPaging ? 1 : ($total > 0 ? (int)ceil($total / $perPage) : 1),
         ];
     }
 }

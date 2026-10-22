@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 11;
+        return 14;
     }
 
     public static function config(): array
@@ -40,6 +40,8 @@ class HlSetup
                     'UF_CONSENT_LOCAL_DT'  => ['string', ['SIZE' => 32]],
                     'UF_HABIT_ID'          => ['string', ['SIZE' => 32]],
                     'UF_HABIT_SELECTED_AT' => ['datetime', []],
+                    // Кеш баланса наград
+                    'UF_REWARD_BALANCE'    => ['integer', []],
                 ],
             ],
             'UserStates' => [
@@ -107,6 +109,7 @@ class HlSetup
                     'UF_TARGET'     => ['string', ['SIZE' => 64]],
                     'UF_TITLE'      => ['string', ['SIZE' => 255]],
                     'UF_BODY'       => ['string', ['SIZE' => 1000, 'ROWS' => 4]],
+                    'UF_URL'        => ['string', ['SIZE' => 500, 'ROWS' => 2]],
                     'UF_STATUS'     => ['string', ['SIZE' => 32]],
                     'UF_CREATED_AT' => ['datetime', []],
                 ],
@@ -207,6 +210,35 @@ class HlSetup
                     'UF_CREATED_AT' => ['datetime', []],
                 ],
             ],
+            'EventActions' => [
+                'name'  => 'X5PwaEventActions',
+                'table' => 'x5_pwa_event_actions',
+                'fields' => [
+                    'UF_UID'            => ['string', ['SIZE' => 40]],
+                    'UF_EVENT_ID'       => ['string', ['SIZE' => 128]],
+                    'UF_EVENT_DATE'     => ['string', ['SIZE' => 10]],
+                    'UF_EVENT_TITLE'    => ['string', ['SIZE' => 255]],
+                    'UF_REWARD_TEXT'    => ['string', ['SIZE' => 64]],
+                    'UF_REWARD_POINTS'  => ['integer', []],
+                    'UF_CLICKED_AT'     => ['datetime', []],
+                    'UF_CONFIRMED_AT'   => ['datetime', []],
+                    'UF_REWARDED'       => ['string', ['SIZE' => 1]],
+                ],
+            ],
+            'RewardLog' => [
+                'name'  => 'X5PwaRewardLog',
+                'table' => 'x5_pwa_reward_log',
+                'fields' => [
+                    'UF_UID'         => ['string', ['SIZE' => 40]],
+                    'UF_ACTION_TYPE' => ['string', ['SIZE' => 32]],
+                    'UF_ACTION_ID'   => ['string', ['SIZE' => 128]],
+                    'UF_UNIQUE_KEY'  => ['string', ['SIZE' => 32]],
+                    'UF_POINTS'      => ['integer', []],
+                    'UF_TITLE'       => ['string', ['SIZE' => 255]],
+                    'UF_LOCAL_DATE'  => ['string', ['SIZE' => 10]],
+                    'UF_CREATED_AT'  => ['datetime', []],
+                ],
+            ],
         ];
     }
 
@@ -233,11 +265,22 @@ class HlSetup
             if (!$hl) continue;
 
             $entityId = 'HLBLOCK_' . $hl['ID'];
+
+            $uf = new \CUserTypeEntity();
             $fields = \CUserTypeEntity::GetList([], ['ENTITY_ID' => $entityId]);
             while ($f = $fields->Fetch()) {
-                \CUserTypeEntity::Delete($f['ID']);
+                try {
+                    $uf->Delete($f['ID']);
+                } catch (\Throwable $e) {
+                    // Игнорируем — HL-обработчик может упасть, если таблицы нет
+                }
             }
-            HighloadBlockTable::delete($hl['ID']);
+
+            try {
+                HighloadBlockTable::delete($hl['ID']);
+            } catch (\Throwable $e) {
+                // Игнорируем
+            }
         }
     }
 
@@ -301,10 +344,11 @@ class HlSetup
 
         $indexes = [
             'x5_pwa_uid_bindings' => [
-                'idx_x5pwa_bindings_total'   => 'UF_TOTAL_STEPS',
-                'idx_x5pwa_bindings_workpl'  => 'UF_WORKPLACE',
-                'idx_x5pwa_bindings_habit'   => 'UF_HABIT_ID',
-                'idx_x5pwa_bindings_consent' => 'UF_CONSENT_GRANTED',
+                'idx_x5pwa_bindings_total'    => 'UF_TOTAL_STEPS',
+                'idx_x5pwa_bindings_workpl'   => 'UF_WORKPLACE',
+                'idx_x5pwa_bindings_habit'    => 'UF_HABIT_ID',
+                'idx_x5pwa_bindings_consent'  => 'UF_CONSENT_GRANTED',
+                'idx_x5pwa_bindings_balance'  => 'UF_REWARD_BALANCE',
             ],
             'x5_pwa_steps' => [
                 'idx_x5pwa_steps_uid_status'  => 'UF_UID, UF_STATUS',
@@ -330,6 +374,23 @@ class HlSetup
                 'idx_x5pwa_support_msg_created' => 'UF_CREATED_AT',
                 'idx_x5pwa_support_msg_t_c'     => 'UF_TICKET_ID, UF_CREATED_AT',
             ],
+            'x5_pwa_event_actions' => [
+                'idx_x5pwa_events_uid'           => 'UF_UID',
+                'idx_x5pwa_events_event'         => 'UF_EVENT_ID',
+                'idx_x5pwa_events_date'          => 'UF_EVENT_DATE',
+                'idx_x5pwa_events_uid_event'     => 'UF_UID, UF_EVENT_ID',
+                'idx_x5pwa_events_uid_clicked'   => 'UF_UID, UF_CLICKED_AT',
+                'idx_x5pwa_events_uid_confirmed' => 'UF_UID, UF_CONFIRMED_AT',
+            ],
+            'x5_pwa_reward_log' => [
+                // Уникальный — гарантирует отсутствие двойного начисления
+                'uniq_x5pwa_reward_key'    => 'unique:UF_UNIQUE_KEY',
+                'idx_x5pwa_reward_uid'     => 'UF_UID',
+                'idx_x5pwa_reward_uid_at'  => 'UF_UID, UF_CREATED_AT',
+                'idx_x5pwa_reward_uid_t'   => 'UF_UID, UF_ACTION_TYPE',
+                'idx_x5pwa_reward_uid_d'   => 'UF_UID, UF_LOCAL_DATE',
+                'idx_x5pwa_reward_date'    => 'UF_LOCAL_DATE',
+            ],
         ];
 
         foreach ($indexes as $table => $list) {
@@ -344,11 +405,18 @@ class HlSetup
                 )->fetch();
                 if ($existing) continue;
 
+                $isUnique = false;
+                if (strpos($columns, 'unique:') === 0) {
+                    $isUnique = true;
+                    $columns  = substr($columns, 7);
+                }
+
                 try {
                     $conn->queryExecute(
-                        "CREATE INDEX `{$indexSafe}` ON `{$tableSafe}` ({$columns})"
+                        ($isUnique ? 'CREATE UNIQUE INDEX ' : 'CREATE INDEX ')
+                        . "`{$indexSafe}` ON `{$tableSafe}` ({$columns})"
                     );
-                    $changes[] = "OK   {$table}.{$indexName} ({$columns})";
+                    $changes[] = "OK   {$table}.{$indexName}" . ($isUnique ? ' (unique)' : '');
                 } catch (\Throwable $e) {
                     $changes[] = "FAIL {$table}.{$indexName} — " . $e->getMessage();
                     \Bitrix\Main\Diag\Debug::writeToFile(

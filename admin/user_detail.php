@@ -27,7 +27,6 @@ if (!$binding) {
 $stats = \X5\Pwa\StatsBuilder::buildUser($uid);
 $sub   = \X5\Pwa\Storage::getSubscription($uid);
 
-// Название выбранной привычки
 $selectedHabit      = $stats['SELECTED_HABIT'] ?? null;
 $selectedHabitTitle = null;
 if ($selectedHabit) {
@@ -81,7 +80,6 @@ $steps = $stats['STEPS'] ?? [];
     .x5pwa-badge-yes { background: #e6f5d8; color: #3a7d1c; }
     .x5pwa-badge-no  { background: #f5e0e0; color: #a52020; }
     .x5pwa-badge-none{ background: #f0f2f5; color: #666; }
-    .x5pwa-badge-theme { background: #e0efff; color: #1e6bcc; }
     .x5pwa-table { width: 100%; border-collapse: collapse; }
     .x5pwa-table td { padding: 6px 12px; border-bottom: 1px solid #eee; }
     .x5pwa-table td:first-child { width: 40%; }
@@ -188,6 +186,34 @@ $steps = $stats['STEPS'] ?? [];
 </div>
 
 <div class="x5pwa-box">
+    <h3>Мероприятия</h3>
+    <div class="x5pwa-grid" style="grid-template-columns: repeat(2, 1fr)">
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= (int)($stats['EVENTS_VISITED'] ?? 0) ?></div>
+            <div class="x5pwa-metric-label">Посещено</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= (int)($stats['EVENTS_CONFIRMED'] ?? 0) ?></div>
+            <div class="x5pwa-metric-label">Подтверждено</div>
+        </div>
+    </div>
+</div>
+
+<div class="x5pwa-box">
+    <h3>Награды</h3>
+    <div class="x5pwa-grid" style="grid-template-columns: repeat(2, 1fr)">
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= (int)($stats['REWARDS_BALANCE'] ?? 0) ?></div>
+            <div class="x5pwa-metric-label">Баланс</div>
+        </div>
+        <div class="x5pwa-metric" style="display:flex;align-items:center;justify-content:center">
+            <a href="x5_pwa_rewards.php?lang=<?= LANGUAGE_ID ?>&UID=<?= urlencode($uid) ?>"
+               class="adm-btn">Полная история →</a>
+        </div>
+    </div>
+</div>
+
+<div class="x5pwa-box">
     <h3>ШАГИ</h3>
     <?php if (empty($steps)): ?>
         <div style="color:#888">Нет данных шагомера.</div>
@@ -234,7 +260,6 @@ $steps = $stats['STEPS'] ?? [];
 </div>
 
 <?php
-// Направления: показываем только реальные (без general/charging/unknown с 0)
 $themeTitles = $stats['THEME_TITLES'] ?? [];
 $themeRows = [];
 foreach ($stats['BY_THEME'] as $code => $count) {
@@ -262,7 +287,6 @@ foreach ($stats['BY_THEME'] as $code => $count) {
 </div>
 
 <?php
-// Привычки: показываем только те, что реально выполнялись
 $habitTitles = $stats['HABIT_TITLES'] ?? [];
 $habitRows = [];
 foreach ($stats['BY_HABIT'] as $id => $count) {

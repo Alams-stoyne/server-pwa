@@ -26,6 +26,8 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\ReflectionBuilder' => 'lib/ReflectionBuilder.php',
     'X5\\Pwa\\StepsBuilder'      => 'lib/StepsBuilder.php',
     'X5\\Pwa\\SupportBuilder'    => 'lib/SupportBuilder.php',
+    'X5\\Pwa\\EventsBuilder'     => 'lib/EventsBuilder.php',
+    'X5\\Pwa\\RewardsBuilder'    => 'lib/RewardsBuilder.php',
     'X5\\Pwa\\Dumper'            => 'lib/Dumper.php',
     'X5\\Pwa\\Storage'           => 'lib/Storage.php',
     'X5\\Pwa\\Data'              => 'lib/Data.php',
@@ -55,6 +57,8 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\Api\\Steps'      => 'lib/Api/Steps.php',
     'X5\\Pwa\\Api\\Consent'    => 'lib/Api/Consent.php',
     'X5\\Pwa\\Api\\Support'    => 'lib/Api/Support.php',
+    'X5\\Pwa\\Api\\Events'     => 'lib/Api/Events.php',
+    'X5\\Pwa\\Api\\Rewards'    => 'lib/Api/Rewards.php',
 ]);
 
 if (ModuleManager::isModuleInstalled('x5.pwa')) {
@@ -85,22 +89,24 @@ if (Loader::includeModule('iblock')) {
     $currentKeys = [
         'themes', 'general_lectures', 'charging', 'theme_lectures',
         'tasks', 'quiz_questions', 'habits', 'today_widgets',
-        'tutorial', 'reflections',
+        'tutorial', 'reflections', 'events',
     ];
 
     $requiredProps = [
         'themes'           => ['SUBTITLE', 'VIDEO_URL', 'VIDEO_DESC', 'MASCOT'],
-        'general_lectures' => ['VIDEO_LINK', 'PHOTOS'],
-        'charging'         => ['VIDEO_LINK', 'PHOTOS'],
-        'theme_lectures'   => ['THEME', 'VIDEO_LINK', 'PHOTOS'],
-        'tasks'            => ['THEME', 'VIDEO_LINK'],
+        'general_lectures' => ['VIDEO_LINK', 'PHOTOS', 'REWARD_POINTS'],
+        'charging'         => ['VIDEO_LINK', 'PHOTOS', 'REWARD_POINTS'],
+        'theme_lectures'   => ['THEME', 'VIDEO_LINK', 'PHOTOS', 'REWARD_POINTS'],
+        'tasks'            => ['THEME', 'VIDEO_LINK', 'REWARD_POINTS'],
         'quiz_questions'   => ['ANSWERS_LIST'],
         'habits'           => ['HINT', 'TIMES_PER_DAY', 'MIN_INTERVAL_MIN',
                                'TIMES_PER_DAY_HINT', 'MIN_INTERVAL_HINT',
-                               'NOTIFY_FROM_TIME'],
+                               'NOTIFY_FROM_TIME', 'REWARD_POINTS'],
         'today_widgets'    => ['STATE', 'SCENARIO', 'TITLE', 'DESCRIPTION'],
         'tutorial'         => [],
         'reflections'      => [],
+        'events'           => ['LINK', 'BUTTON_TEXT', 'TIMER_MINS',
+                               'REWARD_TEXT', 'REWARD_POINTS'],
     ];
 
     $needsSetup = Option::get($moduleId, 'ib_setup_done', 'N') !== 'Y';

@@ -27,33 +27,37 @@ class IblockSetup
                 'name' => 'X5 PWA — Общие лекции',
                 'code' => 'x5pwa_general_lectures',
                 'props' => [
-                    'VIDEO_LINK' => ['type' => 'S'],
-                    'PHOTOS'     => ['type' => 'F', 'multiple' => 'Y'],
+                    'VIDEO_LINK'    => ['type' => 'S'],
+                    'PHOTOS'        => ['type' => 'F', 'multiple' => 'Y'],
+                    'REWARD_POINTS' => ['type' => 'N'],
                 ],
             ],
             'charging' => [
                 'name' => 'X5 PWA — Зарядка',
                 'code' => 'x5pwa_charging',
                 'props' => [
-                    'VIDEO_LINK' => ['type' => 'S'],
-                    'PHOTOS'     => ['type' => 'F', 'multiple' => 'Y'],
+                    'VIDEO_LINK'    => ['type' => 'S'],
+                    'PHOTOS'        => ['type' => 'F', 'multiple' => 'Y'],
+                    'REWARD_POINTS' => ['type' => 'N'],
                 ],
             ],
             'theme_lectures' => [
                 'name' => 'X5 PWA — Лекции по направлениям',
                 'code' => 'x5pwa_theme_lectures',
                 'props' => [
-                    'THEME'      => ['type' => 'E', 'linkIblock' => 'themes'],
-                    'VIDEO_LINK' => ['type' => 'S'],
-                    'PHOTOS'     => ['type' => 'F', 'multiple' => 'Y'],
+                    'THEME'         => ['type' => 'E', 'linkIblock' => 'themes'],
+                    'VIDEO_LINK'    => ['type' => 'S'],
+                    'PHOTOS'        => ['type' => 'F', 'multiple' => 'Y'],
+                    'REWARD_POINTS' => ['type' => 'N'],
                 ],
             ],
             'tasks' => [
                 'name' => 'X5 PWA — Задания по направлениям',
                 'code' => 'x5pwa_tasks',
                 'props' => [
-                    'THEME'      => ['type' => 'E', 'linkIblock' => 'themes'],
-                    'VIDEO_LINK' => ['type' => 'S'],
+                    'THEME'         => ['type' => 'E', 'linkIblock' => 'themes'],
+                    'VIDEO_LINK'    => ['type' => 'S'],
+                    'REWARD_POINTS' => ['type' => 'N'],
                 ],
             ],
             'quiz_questions' => [
@@ -79,6 +83,7 @@ class IblockSetup
                     'TIMES_PER_DAY_HINT' => ['type' => 'N'],
                     'MIN_INTERVAL_HINT'  => ['type' => 'N'],
                     'NOTIFY_FROM_TIME'   => ['type' => 'S'],
+                    'REWARD_POINTS'      => ['type' => 'N'],
                 ],
             ],
             'today_widgets' => [
@@ -99,11 +104,21 @@ class IblockSetup
                 'code' => 'x5pwa_tutorial',
                 'props' => [],
             ],
-            // ─── НОВОЕ: настройки рефлексии по датам ───
             'reflections' => [
                 'name' => 'X5 PWA — Настройки рефлексии',
                 'code' => 'x5pwa_reflections',
                 'props' => [],
+            ],
+            'events' => [
+                'name' => 'X5 PWA — События дня',
+                'code' => 'x5pwa_events',
+                'props' => [
+                    'LINK'          => ['type' => 'S'],
+                    'BUTTON_TEXT'   => ['type' => 'S'],
+                    'TIMER_MINS'    => ['type' => 'N'],
+                    'REWARD_TEXT'   => ['type' => 'S'],
+                    'REWARD_POINTS' => ['type' => 'N'],
+                ],
             ],
         ];
     }

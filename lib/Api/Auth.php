@@ -1,6 +1,7 @@
 <?php
 namespace X5\Pwa\Api;
 
+use X5\Pwa\RewardsBuilder;
 use X5\Pwa\Storage;
 use X5\Pwa\RateLimit;
 
@@ -62,7 +63,7 @@ class Auth
         if (!$uidBinding) Storage::saveBinding($uid, $deviceId, $deviceCreatedAt);
         else              Storage::touchBinding((int)$uidBinding['ID']);
 
-        // Таймзона пользователя
+        // Таймзона
         $tz = Storage::parseTzOffsetFromArray($body);
         if ($tz !== null) {
             Storage::saveUserTzOffsetMin($uid, $tz);
@@ -74,16 +75,20 @@ class Auth
         $selectedHabit = Storage::getSelectedHabit($uid);
 
         // ─── Склеиваем STATE с серверными полями ───
-        //   CONSENT и HABIT_SELECTED — сервер-authoritative,
-        //   они добавляются только на чтении, но не пишутся через POST /state.
+        //   CONSENT, HABIT_SELECTED, REWARDS — сервер-authoritative,
+        //   добавляются только на чтении, не пишутся через POST /state.
         $state = is_array($storedState) ? $storedState : [];
 
-        $state['HABIT_SELECTED'] = $selectedHabit; // string | null
+        $state['HABIT_SELECTED'] = $selectedHabit;
 
         $state['CONSENT'] = [
             'ANSWERED' => (bool)$consent['hasConsent'],
             'GRANTED'  => (bool)$consent['granted'],
-            'AT'       => $consent['serverAt'], // ISO 8601 | null
+            'AT'       => $consent['serverAt'],
+        ];
+
+        $state['REWARDS'] = [
+            'BALANCE' => RewardsBuilder::getBalance($uid),
         ];
 
         return [

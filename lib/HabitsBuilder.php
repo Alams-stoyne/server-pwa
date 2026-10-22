@@ -5,10 +5,7 @@ class HabitsBuilder
 {
     private static ?array $cache = null;
 
-    /** Дефолтный текст напоминания */
     private const DEFAULT_HINT = 'Выполните текущую полезную активность.';
-
-    /** Дефолтное время старта напоминаний (локальное время пользователя) */
     private const DEFAULT_NOTIFY_FROM_TIME = '09:00';
 
     public static function getAll(): array
@@ -46,19 +43,13 @@ class HabitsBuilder
                 'timesPerDayHint' => max(1, IbReader::propInt($props, 'TIMES_PER_DAY_HINT', 1)),
                 'minIntervalHint' => max(0, IbReader::propInt($props, 'MIN_INTERVAL_HINT', 0)),
                 'notifyFromTime'  => $notifyFromTime,
+                'rewardPoints'    => max(0, IbReader::propInt($props, 'REWARD_POINTS', 0)),
             ];
         }
 
         return self::$cache = $out;
     }
 
-    /**
-     * Привычки для пользователя с прогрессом.
-     * Дополнительно:
-     *   • doneToday   — сколько раз выполнено сегодня (в локальной дате)
-     *   • lastDoneAt  — время последнего выполнения (ISO 8601) или null
-     *   • canComplete — можно ли ещё выполнить сегодня (doneToday < timesPerDay)
-     */
     public static function getForUser(string $uid): array
     {
         $habits = self::getAll();

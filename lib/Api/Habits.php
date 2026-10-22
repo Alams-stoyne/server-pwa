@@ -2,6 +2,7 @@
 namespace X5\Pwa\Api;
 
 use X5\Pwa\HabitsBuilder;
+use X5\Pwa\RewardsBuilder;
 use X5\Pwa\Storage;
 
 class Habits
@@ -22,57 +23,33 @@ class Habits
         ];
     }
 
-    /**
-     * POST /habits/selection
-     * Body: { ID_USER }
-     * Ответ: { RESULT: 'OK', HABIT_ID: 'water-energy' | null, HABIT_TITLE?, SELECTED_AT? }
-     *
-     * Отдаёт текущий выбор. Если пользователь ещё не выбрал — HABIT_ID: null.
-     */
     public static function selection(array $b): array
     {
         $uid = trim((string)($b['ID_USER'] ?? ''));
         if ($uid === '') {
-            return [
-                'RESULT'   => 'ERROR',
-                'MESSAGE'  => 'ID_USER required',
-                'HABIT_ID' => null,
-            ];
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required', 'HABIT_ID' => null];
         }
         if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
-            return [
-                'RESULT'   => 'ERROR',
-                'MESSAGE'  => 'Invalid ID_USER',
-                'HABIT_ID' => null,
-            ];
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid ID_USER', 'HABIT_ID' => null];
         }
 
         if (Storage::isBlocked($uid)) {
-            return [
-                'RESULT'   => 'BLOCKED',
-                'MESSAGE'  => 'Доступ приостановлен.',
-                'HABIT_ID' => null,
-            ];
+            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.', 'HABIT_ID' => null];
         }
 
         $binding = Storage::getUidBinding($uid);
         if (!$binding) {
-            return [
-                'RESULT'   => 'UID_NOT_FOUND',
-                'MESSAGE'  => 'Пользователь не найден.',
-                'HABIT_ID' => null,
-            ];
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.', 'HABIT_ID' => null];
         }
 
         $habitId = Storage::getSelectedHabit($uid);
 
         $result = [
             'RESULT'   => 'OK',
-            'HABIT_ID' => $habitId, // string | null
+            'HABIT_ID' => $habitId,
         ];
 
         if ($habitId !== null) {
-            // Название привычки — удобно для клиента (показать в UI без /config/habits)
             foreach (HabitsBuilder::getAll() as $h) {
                 if ((string)$h['id'] === (string)$habitId) {
                     $result['HABIT_TITLE'] = (string)$h['title'];
@@ -82,9 +59,7 @@ class Habits
             if (!empty($binding['UF_HABIT_SELECTED_AT'])) {
                 try {
                     $result['SELECTED_AT'] = $binding['UF_HABIT_SELECTED_AT']->format('Y-m-d\TH:i:sP');
-                } catch (\Throwable $e) {
-                    /* ignore bad datetime */
-                }
+                } catch (\Throwable $e) { /* ignore */ }
             }
         }
 
@@ -93,13 +68,6 @@ class Habits
         return $result;
     }
 
-    /**
-     * POST /habits/select
-     * Body: { ID_USER, HABIT_ID }
-     * Ответ:
-     *   OK               — привычка выбрана впервые (или повторно тот же id)
-     *   ALREADY_SELECTED — уже выбрана другая привычка, менять нельзя
-     */
     public static function select(array $b): array
     {
         $uid     = trim((string)($b['ID_USER']  ?? ''));
@@ -150,9 +118,6 @@ class Habits
         ];
     }
 
-    /**
-     * Отметка выполнения привычки.
-     */
     public static function complete(array $b): array
     {
         $uid = (string)($b['ID_USER'] ?? '');
@@ -237,13 +202,15 @@ class Habits
 
         $doneToday = $completionsToday + 1;
 
-        // Если норма на сегодня выполнена — гарантированно блокируем
-        // дальнейшие напоминания по этой привычке на этот день.
+        // Если норма на сегодня выполнена:
+        //   • блокируем дальнейшие напоминания;
+        //   • начисляем награду.
         if ($doneToday >= $timesPerDay) {
             $hint = isset($habitCfg['timesPerDayHint'])
                 ? (int)$habitCfg['timesPerDayHint']
                 : 1;
             Storage::markHabitDayDone($uid, $id, $userLocalDate, $hint);
+            RewardsBuilder::awardHabit($uid, $habitCfg, $doneToday, $userLocalDate);
         }
 
         Storage::touchBindingByUid($uid);
@@ -259,9 +226,6 @@ class Habits
         ];
     }
 
-    /**
-     * Приводит дату выполнения к unix-ms по серверу (UTC).
-     */
     private static function toServerMs($dt): int
     {
         if ($dt instanceof \Bitrix\Main\Type\DateTime

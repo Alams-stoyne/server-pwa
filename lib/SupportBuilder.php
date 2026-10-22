@@ -24,7 +24,6 @@ class SupportBuilder
     public const SRC_APP   = 'app';
     public const SRC_GUEST = 'app_unauth';
 
-    // Whitelist AUTH_ERROR — остальные обрезаются до 32 и сохраняются «как есть»
     public const AUTH_ERRORS = [
         'UID_TAKEN',
         'UID_LOCKED',
@@ -32,6 +31,9 @@ class SupportBuilder
         'BLOCKED',
         'RATE_LIMITED',
     ];
+
+    /** Дефолтный URL для push-уведомления об ответе (плейсхолдер {ID} → номер тикета) */
+    private const DEFAULT_PUSH_URL_TPL = '/support/tickets/{ID}';
 
     // ───────── Создание тикета (авторизованный) ─────────
 
@@ -130,14 +132,8 @@ class SupportBuilder
         ];
     }
 
-    // ───────── Создание тикета (гость / неавторизованный) ─────────
+    // ───────── Создание тикета (гость) ─────────
 
-    /**
-     * Гостевой тикет.
-     * Идентификатор — DEVICE_ID (обязателен). UID опционален и не проверяется
-     * на существование в UidBindings: он может быть невалидным/чужим.
-     * AUTH_ERROR — контекст (UID_TAKEN / UID_LOCKED / DEVICE_ROTATED / BLOCKED).
-     */
     public static function createGuestTicket(
         string $deviceId,
         ?string $uid,
@@ -541,7 +537,7 @@ class SupportBuilder
     public static function deleteTicket(int $ticketId): bool
     {
         $ticketsDc = Storage::dataClass('X5PwaSupportTickets');
-        $ticket = $ticketsDc::getList(['filter' => ['=ID' => $ticketId], 'limit' => 1])->fetch();
+        $ticket = $ticketsDc->getList(['filter' => ['=ID' => $ticketId], 'limit' => 1])->fetch();
         if (!$ticket) return false;
 
         $msgDc = Storage::dataClass('X5PwaSupportMessages');
@@ -707,7 +703,6 @@ class SupportBuilder
             $query = (string)$params['user'];
             $uids  = self::findUidsByUserQuery($query);
 
-            // Ищем также совпадения по DEVICE_ID (для гостевых тикетов)
             $like = '%' . $query . '%';
             $deviceMatches = $ticketsDc::getList([
                 'select' => ['ID'],
@@ -973,7 +968,6 @@ class SupportBuilder
             return ['RESULT' => 'RATE_LIMITED', 'MESSAGE' => 'Не более ' . self::TICKET_PER_DAY_LIMIT . ' обращений в сутки.'];
         }
 
-        // Дополнительный лимит по IP, чтобы нельзя было обойти через подмену DEVICE_ID
         $ip = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
         if ($ip !== '') {
             $safeIp = $sqlHelper->forSql($ip);
@@ -1008,37 +1002,129 @@ class SupportBuilder
 
     // ───────── Push ─────────
 
+    /**
+     * Отправка push-уведомления пользователю об ответе поддержки.
+     *
+     * ЕДИНСТВЕННАЯ КОПИЯ МЕТОДА. Если случайно появится вторая — PHP
+     * упадёт с "Cannot redeclare". При правках — только заменять тело,
+     * не добавлять копию.
+     */
     private static function pushUser(string $uid, int $ticketId, string $subject): void
     {
+        $url    = self::buildSupportUrl($ticketId);
+        $title  = 'Ответ по обращению №' . $ticketId;
+        $body   = mb_substr(
+            $subject !== '' ? $subject : 'Новое сообщение от поддержки',
+            0, 120
+        );
+
         try {
-            $pushClass = '\\X5\\Pwa\\Push';
-            if (!class_exists($pushClass)) return;
-
-            $urlTpl = (string)Settings::get('support_push_url_template', '');
-            $url    = $urlTpl !== '' ? str_replace('{ID}', (string)$ticketId, $urlTpl) : '';
-            $title  = 'Ответ по обращению №' . $ticketId;
-            $body   = mb_substr($subject !== '' ? $subject : 'Новое сообщение от поддержки', 0, 120);
-
-            $sent = false;
-            if (method_exists($pushClass, 'notifyUser')) {
-                $pushClass::notifyUser($uid, $title, $body, $url, 'support-' . $ticketId);
-                $sent = true;
-            } elseif (method_exists($pushClass, 'sendToUid')) {
-                $pushClass::sendToUid($uid, $title, $body, $url);
-                $sent = true;
+            if (!class_exists('\\X5\\Pwa\\Push')) {
+                self::logPushHistory($uid, $title, $body, $url, 'no_push_lib');
+                return;
             }
-            if (!$sent) {
+
+            $sub = Storage::getSubscription($uid);
+            if (!$sub) {
+                self::logPushHistory($uid, $title, $body, $url, 'no_sub');
                 \Bitrix\Main\Diag\Debug::writeToFile(
-                    'Push API not integrated; uid=' . substr($uid, 0, 12) . '… ticket=' . $ticketId
-                    . ' url="' . $url . '"',
+                    'skip: no subscription uid=' . substr($uid, 0, 12) . '… ticket=' . $ticketId,
                     'SupportBuilder::pushUser',
                     '/x5.pwa.log'
                 );
+                return;
             }
+
+            $payload = [
+                'title' => $title,
+                'body'  => $body,
+                'icon'  => '/icons/icon-192.png',
+                'badge' => '/icons/icon-192.png',
+                'url'   => $url,
+                'tag'   => 'support-' . $ticketId,
+            ];
+
+            $r = \X5\Pwa\Push::send($uid, $sub, $payload);
+
+            if (!empty($r['ok'])) {
+                $status = (string)($r['statusCode'] ?? '201');
+                self::logPushHistory($uid, $title, $body, $url, $status);
+
+                \Bitrix\Main\Diag\Debug::writeToFile(
+                    sprintf(
+                        'sent uid=%s ticket=%d status=%s url=%s',
+                        substr($uid, 0, 12) . '…', $ticketId, $status, $url
+                    ),
+                    'SupportBuilder::pushUser',
+                    '/x5.pwa.log'
+                );
+                return;
+            }
+
+            if (!empty($r['gone'])) {
+                Storage::deleteSubscription($uid);
+                self::logPushHistory($uid, $title, $body, $url, 'gone');
+            } else {
+                self::logPushHistory($uid, $title, $body, $url, 'error');
+            }
+
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                sprintf(
+                    'failed uid=%s ticket=%d status=%s message=%s',
+                    substr($uid, 0, 12) . '…', $ticketId,
+                    (string)($r['statusCode'] ?? '-'),
+                    (string)($r['message'] ?? '-')
+                ),
+                'SupportBuilder::pushUser',
+                '/x5.pwa.log'
+            );
+        } catch (\Throwable $e) {
+            self::logPushHistory($uid, $title, $body, $url, 'error');
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'push exception uid=' . substr($uid, 0, 12) . '… ticket=' . $ticketId
+                . ': ' . $e->getMessage(),
+                'SupportBuilder::pushUser',
+                '/x5.pwa.log'
+            );
+        }
+    }
+
+    /**
+     * URL для push-уведомления. По умолчанию /support/tickets/{ID}.
+     */
+    private static function buildSupportUrl(int $ticketId): string
+    {
+        $tpl = (string)Settings::get('support_push_url_template', '');
+        if ($tpl === '') $tpl = self::DEFAULT_PUSH_URL_TPL;
+
+        return str_replace('{ID}', (string)$ticketId, $tpl);
+    }
+
+    /**
+     * Записать факт отправки push в историю.
+     *
+     * ЕДИНСТВЕННАЯ КОПИЯ МЕТОДА. При правках — заменять тело, не копировать.
+     */
+    private static function logPushHistory(
+        string $uid,
+        string $title,
+        string $body,
+        string $url,
+        string $status
+    ): void {
+        try {
+            Storage::addPushHistory([
+                'type'   => 'support-reply',
+                'target' => $uid,
+                'title'  => $title,
+                'body'   => $body,
+                'url'    => $url,
+                'status' => mb_substr($status, 0, 32),
+            ]);
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile(
-                'push failed: ' . $e->getMessage(),
-                'SupportBuilder::pushUser',
+                'history log failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
+                'SupportBuilder::logPushHistory',
                 '/x5.pwa.log'
             );
         }
