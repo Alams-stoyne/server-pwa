@@ -6,9 +6,9 @@ class ReflectionBuilder
     private static ?array $settingsCache = null;
 
     /**
-     * Все настройки рефлексии из IB. Сортировка по ACTIVE_FROM ASC.
+     * Все настройки рефлексии из ИБ. Сортировка по ACTIVE_FROM ASC.
      *
-     * @return array<int, array{date:string, title:string, description:string}>
+     * @return array<int, array{date:string, title:string, description:string, rewardPoints:int}>
      */
     public static function getAllSettings(): array
     {
@@ -35,10 +35,18 @@ class ReflectionBuilder
             }
             if ($date === null) continue;
 
+            // REWARD_POINTS из свойства элемента
+            $rewardPoints = 0;
+            $props = IbReader::props($ibId, (int)$el['ID']);
+
             $out[] = [
-                'date'        => $date,
-                'title'       => (string)$el['NAME'],
-                'description' => (string)$el['PREVIEW_TEXT'],
+                'date'         => $date,
+                'title'        => (string)$el['NAME'],
+                'description'  => (string)$el['PREVIEW_TEXT'],
+                'rewardPoints' => (int)$props['REWARD_POINTS'] ?? 0,
+                'openTextCloud' => $props['OPEN_TEXT'] ?? null,
+                'sendTextCloud' => $props['SEND_TEXT'] ?? null,
+                'afterTextCloud' => $props['AFTER_TEXT'] ?? null,
             ];
         }
 
@@ -66,9 +74,10 @@ class ReflectionBuilder
         if ($latest !== null) return $latest;
 
         return [
-            'date'        => $date,
-            'title'       => 'О чём вы думаете сейчас?',
-            'description' => 'Расскажите о своих мыслях и ощущениях.',
+            'date'         => $date,
+            'title'        => 'О чём вы думаете сейчас?',
+            'description'  => 'Расскажите о своих мыслях и ощущениях.',
+            'rewardPoints' => 0,
         ];
     }
 
@@ -133,22 +142,6 @@ class ReflectionBuilder
         return ['ok' => true, 'reason' => null, 'id' => (int)$res->getId(), 'sentAt' => $serverNowIso];
     }
 
-    /**
-     * Список рефлексий для админки. Параметризованная сортировка, фильтры,
-     * пагинация.
-     *
-     * $params:
-     *   search      — LIKE по тексту
-     *   uid         — LIKE по UID
-     *   approved    — 'Y' | 'N' | '' (все)
-     *   date_from   — 'YYYY-MM-DD' включительно
-     *   date_to     — 'YYYY-MM-DD' включительно
-     *   sort        — ID | UF_SENT_AT | UF_LOCAL_DATE | UF_UID | UF_APPROVED
-     *   sortDir     — ASC | DESC
-     *   page, perPage, noPaging
-     *
-     * @return array{rows:array,total:int,page:int,perPage:int,pages:int}
-     */
     public static function listForAdmin(array $params = []): array
     {
         $dc = Storage::dataClass('X5PwaReflections');

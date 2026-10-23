@@ -99,14 +99,11 @@ if (Loader::includeModule('iblock')) {
         'theme_lectures'   => ['THEME', 'VIDEO_LINK', 'PHOTOS', 'REWARD_POINTS'],
         'tasks'            => ['THEME', 'VIDEO_LINK', 'REWARD_POINTS'],
         'quiz_questions'   => ['ANSWERS_LIST'],
-        'habits'           => ['HINT', 'TIMES_PER_DAY', 'MIN_INTERVAL_MIN',
-                               'TIMES_PER_DAY_HINT', 'MIN_INTERVAL_HINT',
-                               'NOTIFY_FROM_TIME', 'REWARD_POINTS'],
+        'habits'           => ['HINT', 'TIMES_PER_DAY', 'MIN_INTERVAL_MIN', 'TIMES_PER_DAY_HINT', 'MIN_INTERVAL_HINT', 'NOTIFY_FROM_TIME', 'REWARD_POINTS'],
         'today_widgets'    => ['STATE', 'SCENARIO', 'TITLE', 'DESCRIPTION'],
         'tutorial'         => [],
-        'reflections'      => [],
-        'events'           => ['LINK', 'BUTTON_TEXT', 'TIMER_MINS',
-                               'REWARD_TEXT', 'REWARD_POINTS'],
+        'reflections'      => ['OPEN_TEXT','SEND_TEXT','AFTER_TEXT','REWARD_POINTS'],
+        'events'           => ['LINK', 'BUTTON_TEXT', 'TIMER_MINS','REWARD_TEXT', 'REWARD_POINTS'],
     ];
 
     $needsSetup = Option::get($moduleId, 'ib_setup_done', 'N') !== 'Y';

@@ -25,25 +25,56 @@ class Reads
         Storage::addRead($uid, $id);
         Storage::touchBindingByUid($uid);
 
-        // Начисление награды (только если лекция опубликована сегодня по локале)
+        // ─── Начисление награды ───
+        // Поддерживаем оба формата ID_LECTURE:
+        //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
+        //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты
+        // Legacy-формат "lecture-theme:YYYY-MM-DD:xyz" не парсится — награда не начисляется.
         try {
-            // ID_LECTURE приходит в формате "{elementId}-{YYYY-MM-DD}" (см. Content)
-            if (preg_match('/^(\d+)-(\d{4}-\d{2}-\d{2})$/', $id, $m)) {
+            if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $id, $m)) {
                 $elementId = (int)$m[1];
                 $localDate = RewardsBuilder::userLocalDate($uid);
                 $info      = RewardsBuilder::resolveLectureInfo($elementId);
 
-                if ($info !== null) {
-                    RewardsBuilder::awardLecture(
+                if ($info === null) {
+                    \Bitrix\Main\Diag\Debug::writeToFile(
+                        'lecture resolve null uid=' . substr($uid, 0, 12) . '… lectureId=' . $id
+                        . ' elementId=' . $elementId,
+                        'Reads::add',
+                        '/x5.pwa.log'
+                    );
+                } else {
+                    $res = RewardsBuilder::awardLecture(
                         $uid,
                         $elementId,
-                        $info['type'],
-                        $info['points'],
-                        $info['title'],
-                        $info['date'],
+                        (string)$info['type'],
+                        (int)$info['points'],
+                        (string)$info['title'],
+                        (string)$info['date'],
                         $localDate
                     );
+
+                    \Bitrix\Main\Diag\Debug::writeToFile(
+                        sprintf(
+                            'lecture award uid=%s elementId=%d type=%s points=%d lectureDate=%s localDate=%s added=%s',
+                            substr($uid, 0, 12) . '…',
+                            $elementId,
+                            $info['type'],
+                            (int)$info['points'],
+                            $info['date'],
+                            $localDate,
+                            !empty($res['added']) ? 'yes' : (!empty($res['already']) ? 'already' : 'no')
+                        ),
+                        'Reads::add',
+                        '/x5.pwa.log'
+                    );
                 }
+            } else {
+                \Bitrix\Main\Diag\Debug::writeToFile(
+                    'lecture id not recognized uid=' . substr($uid, 0, 12) . '… lectureId=' . $id,
+                    'Reads::add',
+                    '/x5.pwa.log'
+                );
             }
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile(

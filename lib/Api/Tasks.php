@@ -25,24 +25,55 @@ class Tasks
         Storage::addTask($uid, $k);
         Storage::touchBindingByUid($uid);
 
-        // Начисление награды (только если задание опубликовано сегодня по локале)
+        // ─── Начисление награды ───
+        // Поддерживаем оба формата ID_TASK, которые встречаются у клиента:
+        //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
+        //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты (как присылает клиент)
         try {
-            // ID_TASK приходит в формате "{elementId}-{YYYY-MM-DD}" (см. Content)
-            if (preg_match('/^(\d+)-(\d{4}-\d{2}-\d{2})$/', $k, $m)) {
+            if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $k, $m)) {
                 $elementId = (int)$m[1];
+                $taskDate  = (string)$m[2];
                 $localDate = RewardsBuilder::userLocalDate($uid);
                 $info      = RewardsBuilder::resolveTaskInfo($elementId);
 
-                if ($info !== null) {
-                    RewardsBuilder::awardTask(
+                if ($info === null) {
+                    \Bitrix\Main\Diag\Debug::writeToFile(
+                        'task resolve null uid=' . substr($uid, 0, 12) . '… taskId=' . $k
+                        . ' elementId=' . $elementId,
+                        'Tasks::complete',
+                        '/x5.pwa.log'
+                    );
+                } else {
+                    $res = RewardsBuilder::awardTask(
                         $uid,
                         $elementId,
-                        $info['points'],
-                        $info['title'],
-                        $info['date'],
+                        (int)$info['points'],
+                        (string)$info['title'],
+                        (string)$info['date'],
                         $localDate
                     );
+
+                    \Bitrix\Main\Diag\Debug::writeToFile(
+                        sprintf(
+                            'task award uid=%s elementId=%d points=%d taskDate=%s localDate=%s added=%s reason=%s',
+                            substr($uid, 0, 12) . '…',
+                            $elementId,
+                            (int)$info['points'],
+                            $info['date'],
+                            $localDate,
+                            !empty($res['added']) ? 'yes' : 'no',
+                            !empty($res['already']) ? 'already' : (!empty($res['added']) ? 'ok' : 'skipped')
+                        ),
+                        'Tasks::complete',
+                        '/x5.pwa.log'
+                    );
                 }
+            } else {
+                \Bitrix\Main\Diag\Debug::writeToFile(
+                    'task id not recognized uid=' . substr($uid, 0, 12) . '… taskId=' . $k,
+                    'Tasks::complete',
+                    '/x5.pwa.log'
+                );
             }
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile(

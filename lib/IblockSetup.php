@@ -107,7 +107,12 @@ class IblockSetup
             'reflections' => [
                 'name' => 'X5 PWA — Настройки рефлексии',
                 'code' => 'x5pwa_reflections',
-                'props' => [],
+                'props' => [
+                    'OPEN_TEXT'         => ['type' => 'S'],
+                    'SEND_TEXT'         => ['type' => 'S'],
+                    'AFTER_TEXT'        => ['type' => 'S'],
+                    'REWARD_POINTS'     => ['type' => 'N'],
+                ],
             ],
             'events' => [
                 'name' => 'X5 PWA — События дня',

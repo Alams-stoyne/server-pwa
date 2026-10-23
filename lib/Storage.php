@@ -792,7 +792,7 @@ class Storage
     public static function listSubscriptions(): array
     {
         $dc = self::dataClass('X5PwaPushSubs');
-        return $dc->getList()->fetchAll();
+        return $dc::getList()->fetchAll();
     }
 
     // ───────── Notification log ─────────
@@ -942,8 +942,10 @@ class Storage
     public static function clearPushHistory(): void
     {
         $dc = self::dataClass('X5PwaPushHistory');
-        $rows = $dc->getList()->fetchAll();
-        foreach ($rows as $r) $dc->delete($r['ID']);
+        $rows = $dc::getList()->fetchAll();
+        foreach ($rows as $r) {
+            $dc::delete((int)$r['ID']);
+        }
     }
 
     // ───────── Rate limit ─────────

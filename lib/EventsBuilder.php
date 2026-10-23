@@ -81,6 +81,7 @@ class EventsBuilder
             ];
             if ($e['BUTTON_TEXT'] !== '') $item['buttonText'] = $e['BUTTON_TEXT'];
             if ($e['REWARD_TEXT'] !== '') $item['rewardText'] = $e['REWARD_TEXT'];
+            if (int $e['REWARD_POINTS'] > 0 ) $item['rewardPoints'] = $e['REWARD_POINTS'];
 
             $events[] = $item;
         }
