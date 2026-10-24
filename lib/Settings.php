@@ -30,15 +30,6 @@ class Settings
         return Option::get(self::MODULE, $key, $default ? 'Y' : 'N') === 'Y';
     }
 
-    /**
-     * Базовый URL CDN для ссылок на изображения.
-     *
-     * Всегда возвращает валидный URL (без завершающего слеша):
-     *   • если cdn_base заполнен и не похож на S3 endpoint — возвращает его;
-     *   • если cdn_base пуст — возвращает https://cdn.x5hd.ru;
-     *   • если в cdn_base случайно записан S3 endpoint — игнорирует его,
-     *     пишет предупреждение в /x5.pwa.log и возвращает https://cdn.x5hd.ru.
-     */
     public static function cdnBase(): string
     {
         $raw = trim(self::get('cdn_base', ''));
@@ -47,7 +38,6 @@ class Settings
             return self::CDN_DEFAULT;
         }
 
-        // Проверяем хост: если похоже на S3 endpoint — используем дефолт
         $host = parse_url($raw, PHP_URL_HOST);
         if (is_string($host) && $host !== '') {
             $isS3 = (bool)preg_match(
@@ -179,5 +169,89 @@ class Settings
     public static function lastDumpAt(): int
     {
         return self::getInt('last_dump_at', 0);
+    }
+
+    // ── Период статистики (нестроковый, настраивается в админке) ──
+
+    /**
+     * Дата старта периода статистики (YYYY-MM-DD). Пусто — не задан.
+     */
+    public static function statsPeriodStart(): string
+    {
+        $raw = trim(self::get('stats_period_start', ''));
+        if ($raw === '') return '';
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) return '';
+        return $raw;
+    }
+
+    /**
+     * Дата завершения периода статистики (YYYY-MM-DD). Пусто — не задан.
+     */
+    public static function statsPeriodEnd(): string
+    {
+        $raw = trim(self::get('stats_period_end', ''));
+        if ($raw === '') return '';
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) return '';
+        return $raw;
+    }
+
+    /**
+     * Проверяет, попадает ли дата (YYYY-MM-DD) в период.
+     * Если границы не заданы — считаем, что попадает.
+     */
+    public static function isDateInPeriod(string $date): bool
+    {
+        $start = self::statsPeriodStart();
+        $end   = self::statsPeriodEnd();
+
+        if ($start !== '' && $date < $start) return false;
+        if ($end   !== '' && $date > $end)   return false;
+        return true;
+    }
+
+    // ── Интервал пересчёта кешей статистики ──
+
+    /**
+     * Минимальный интервал между пересчётами RANK/EFFICIENCY (сек).
+     */
+    public static function statsRecalcIntervalSec(): int
+    {
+        $v = self::getInt('stats_recalc_interval_sec', 3600);
+        if ($v < 60) $v = 60;
+        return $v;
+    }
+
+    public static function statsRecalcLastAt(): int
+    {
+        return self::getInt('stats_recalc_last_at', 0);
+    }
+
+    public static function touchStatsRecalcTime(): void
+    {
+        self::set('stats_recalc_last_at', (string)time());
+    }
+
+    public static function statsRecalcDue(): bool
+    {
+        $last = self::statsRecalcLastAt();
+        if ($last <= 0) return true;
+        return (time() - $last) >= self::statsRecalcIntervalSec();
+    }
+
+    // ── Награды (дефолты; сами значения — в настройках модуля) ──
+
+    public static function rewardStepsSentPoints(): int
+    {
+        return max(0, self::getInt('reward_steps_sent_points', 0));
+    }
+
+    public static function rewardStepsApprovedPoints(): int
+    {
+        return max(0, self::getInt('reward_steps_approved_points', 5));
+    }
+
+    public static function rewardReflectionPoints(): int
+    {
+        return max(0, self::getInt('reward_reflection_points', 2));
     }
 }

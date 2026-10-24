@@ -7,6 +7,7 @@ class RewardsBuilder
     public const TYPE_LECTURE         = 'lecture';
     public const TYPE_CHARGING        = 'charging';
     public const TYPE_TASK            = 'task';
+    public const TYPE_REFLECTION      = 'reflection';
     public const TYPE_STEPS_SENT      = 'steps_sent';
     public const TYPE_STEPS_APPROVED  = 'steps_approved';
     public const TYPE_EVENT           = 'event';
@@ -16,6 +17,7 @@ class RewardsBuilder
         self::TYPE_LECTURE,
         self::TYPE_CHARGING,
         self::TYPE_TASK,
+        self::TYPE_REFLECTION,
         self::TYPE_STEPS_SENT,
         self::TYPE_STEPS_APPROVED,
         self::TYPE_EVENT,
@@ -26,22 +28,12 @@ class RewardsBuilder
         self::TYPE_LECTURE        => 'Лекция',
         self::TYPE_CHARGING       => 'Зарядка',
         self::TYPE_TASK           => 'Практика',
+        self::TYPE_REFLECTION     => 'Рефлексия',
         self::TYPE_STEPS_SENT     => 'Шаги (отправка)',
         self::TYPE_STEPS_APPROVED => 'Шаги (подтверждено)',
         self::TYPE_EVENT          => 'Мероприятие',
     ];
 
-    // ───────── Основная точка входа ─────────
-
-    /**
-     * Универсальное начисление.
-     *
-     * Если points <= 0 — ничего не делает (успех, без записи).
-     * Если UF_UNIQUE_KEY уже существует — возвращает ['added' => false, 'already' => true]
-     * без изменения баланса.
-     *
-     * @return array{ok:bool,added:bool,already:bool,points:int,balance:int}
-     */
     public static function award(
         string $uid,
         string $actionType,
@@ -127,8 +119,6 @@ class RewardsBuilder
         ];
     }
 
-    // ───────── Хелперы для конкретных типов ─────────
-
     public static function awardHabit(string $uid, array $habitCfg, int $doneToday, string $localDate): array
     {
         $timesPerDay = (int)($habitCfg['timesPerDay'] ?? 1);
@@ -209,9 +199,41 @@ class RewardsBuilder
         );
     }
 
+    public static function awardReflection(string $uid, string $localDate): array
+    {
+        $points = 0;
+        $title  = 'Рефлексия за ' . $localDate;
+
+        try {
+            $setting = ReflectionBuilder::getForDate($localDate);
+            if (!empty($setting['title'])) {
+                $title = 'Рефлексия: ' . $setting['title'];
+            }
+            $points = (int)($setting['rewardPoints'] ?? 0);
+        } catch (\Throwable $e) {}
+
+        if ($points <= 0) $points = Settings::rewardReflectionPoints();
+
+        if ($points <= 0) {
+            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+        }
+
+        return self::award(
+            $uid,
+            self::TYPE_REFLECTION,
+            $localDate,
+            $points,
+            $title,
+            $localDate
+        );
+    }
+
     public static function awardStepsSent(string $uid, string $localDate): array
     {
-        $points = Settings::getInt('reward_steps_sent_points', 1);
+        $points = Settings::rewardStepsSentPoints();
+        if ($points <= 0) {
+            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+        }
         return self::award(
             $uid,
             self::TYPE_STEPS_SENT,
@@ -224,7 +246,10 @@ class RewardsBuilder
 
     public static function awardStepsApproved(string $uid, string $stepsLocalDate): array
     {
-        $points = Settings::getInt('reward_steps_approved_points', 10);
+        $points = Settings::rewardStepsApprovedPoints();
+        if ($points <= 0) {
+            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+        }
         return self::award(
             $uid,
             self::TYPE_STEPS_APPROVED,
@@ -256,13 +281,6 @@ class RewardsBuilder
         );
     }
 
-    // ───────── Резолв лекции/задания из ИБ ─────────
-
-    /**
-     * Определяет тип лекции (general/charging/theme) и её метаданные.
-     *
-     * @return array{type:string,title:string,date:string,points:int}|null
-     */
     public static function resolveLectureInfo(int $elementId): ?array
     {
         if ($elementId <= 0) return null;
@@ -310,9 +328,6 @@ class RewardsBuilder
         ];
     }
 
-    /**
-     * @return array{title:string,date:string,points:int}|null
-     */
     public static function resolveTaskInfo(int $elementId): ?array
     {
         if ($elementId <= 0) return null;
@@ -352,8 +367,6 @@ class RewardsBuilder
         ];
     }
 
-    // ───────── Баланс / история ─────────
-
     public static function getBalance(string $uid): int
     {
         return Storage::getRewardBalance($uid);
@@ -368,8 +381,6 @@ class RewardsBuilder
     {
         return Storage::getRewardHistory($uid, $params);
     }
-
-    // ───────── Хелперы ─────────
 
     public static function userLocalDate(string $uid): string
     {

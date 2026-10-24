@@ -25,8 +25,9 @@ class Scheduler
 
         try {
             self::runHabitReminders();
+            self::maybeRecalcStats();          // ← пересчёт кешей RANK/EFFICIENCY/HABITS_DAYS
             self::maybeRegenerateDumps();
-            self::maybeRegenerateStats();
+            self::maybeRegenerateStats();      // ← обновление stats/global.json на CDN
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile(
                 $e->getMessage(), 'Scheduler::lazyRun', '/x5.pwa.log'
@@ -35,6 +36,36 @@ class Scheduler
 
         flock($fp, LOCK_UN);
         fclose($fp);
+    }
+
+    /**
+     * Пересчёт кешей статистики в UidBindings:
+     *   • UF_RANK — композитный рейтинг;
+     *   • UF_EFFICIENCY_ALL — эффективность за период;
+     *   • UF_EFFICIENCY_DAY — эффективность за сегодня;
+     *   • UF_HABITS_DAYS — число полных дней привычки.
+     *
+     * Запускается не чаще stats_recalc_interval_sec (дефолт 3600 сек).
+     */
+    private static function maybeRecalcStats(): void
+    {
+        if (!Settings::statsRecalcDue()) return;
+
+        try {
+            $r = StatsBuilder::recalcAllStats();
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'recalcAllStats: processed=' . ($r['processed'] ?? 0)
+                . ' elapsed=' . ($r['elapsed'] ?? '?') . 's',
+                'Scheduler recalc',
+                '/x5.pwa.log'
+            );
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'recalcAllStats FAILED: ' . $e->getMessage(),
+                'Scheduler recalc',
+                '/x5.pwa.log'
+            );
+        }
     }
 
     private static function maybeRegenerateStats(): void
@@ -95,19 +126,12 @@ class Scheduler
 
     /**
      * Напоминания о привычках, ориентируясь на локальное время пользователя.
-     *
-     * Ключевое отличие от предыдущей версии:
-     *   • напоминаем ТОЛЬКО по выбранной привычке (UF_HABIT_ID);
-     *   • если привычка ещё не выбрана — только по тем, что пользователь
-     *     хотя бы раз выполнял (а не по всему каталогу);
-     *   • корректный парсинг UF_COMPLETED_AT через getTimestamp().
      */
     private static function runHabitReminders(): void
     {
         $allHabits = HabitsBuilder::getAll();
         if (!$allHabits) return;
 
-        // Индекс: id привычки → её конфиг
         $habitsById = [];
         foreach ($allHabits as $cfg) {
             $habitsById[(string)$cfg['id']] = $cfg;
@@ -131,22 +155,16 @@ class Scheduler
             $userLocalTime = gmdate('H:i', (int)($userLocalMs / 1000));
             $userLocalHour = (int)gmdate('G', (int)($userLocalMs / 1000));
 
-            // Ночь — по локальному времени пользователя
             if ($userLocalHour >= self::NIGHT_START || $userLocalHour < self::NIGHT_END) {
                 continue;
             }
 
-            // Не раньше, чем через FIRST_DELAY_HOURS от локального начала дня
             $dayStartServerMs = (strtotime($userLocalDate . ' 00:00:00 UTC') * 1000) - $offsetMs;
             $firstAtServerMs  = $dayStartServerMs + self::FIRST_DELAY_HOURS * 3600 * 1000;
             if ($nowMs < $firstAtServerMs) continue;
 
             $userLogs = Storage::getHabits($uid);
 
-            // ─── Кого напоминаем ───
-            //   • если задан UF_HABIT_ID — только его;
-            //   • если не задан — только привычки, которые пользователь
-            //     когда-либо выполнял (есть в $userLogs).
             $selectedHabit    = Storage::getSelectedHabit($uid);
             $habitIdsToNotify = [];
 
@@ -194,7 +212,6 @@ class Scheduler
                     }
                 }
 
-                // 1. Норма дня выполнена
                 if ($completionsToday >= (int)$cfg['timesPerDay']) {
                     self::logSkip($uid, $habitId, 'done_today', [
                         'completionsToday' => $completionsToday,
@@ -203,7 +220,6 @@ class Scheduler
                     continue;
                 }
 
-                // 2. Интервал между выполнениями ещё не прошёл
                 $baseline = $lastCompletedServerMs ?: $firstAtServerMs;
                 $minMs    = ((int)$cfg['minIntervalMin']) * 60 * 1000;
                 if ($minMs > 0 && ($nowMs - $baseline) < $minMs) {
@@ -215,7 +231,6 @@ class Scheduler
                     continue;
                 }
 
-                // 3. Время старта напоминаний ещё не наступило
                 $notifyFromTime = (string)($cfg['notifyFromTime'] ?? '');
                 if ($notifyFromTime !== '' && $userLocalTime < $notifyFromTime) {
                     self::logSkip($uid, $habitId, 'notify_from_time', [
@@ -225,7 +240,6 @@ class Scheduler
                     continue;
                 }
 
-                // 4. Состояние напоминаний за сегодня
                 $notif = Storage::getNotifState($uid, $habitId, $userLocalDate);
 
                 if ($notif['todayCount'] >= (int)$cfg['timesPerDayHint']) {
@@ -247,7 +261,6 @@ class Scheduler
                     continue;
                 }
 
-                // Всё прошло — отправляем
                 $payload = Push::buildHabitPayload($habitId, $cfg);
                 $r = Push::send($uid, $sub, $payload);
 
@@ -277,9 +290,6 @@ class Scheduler
         }
     }
 
-    /**
-     * Приводит дату выполнения к unix-ms по серверу (UTC).
-     */
     private static function toServerMs($dt): int
     {
         if ($dt instanceof \Bitrix\Main\Type\DateTime

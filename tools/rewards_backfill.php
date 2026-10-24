@@ -9,8 +9,8 @@
  * Параметры:
  *   • uid=…              — только для этого пользователя (пусто → все);
  *   • since=YYYY-MM-DD   — с какой даты (по умолчанию −30 дней);
- *   • types=…            — какие типы (habit,task,lecture,charging,steps_sent,
- *                          steps_approved,event). По умолчанию — все.
+ *   • types=…            — какие типы (habit,task,lecture,charging,reflection,
+ *                          steps_sent,steps_approved,event). По умолчанию — все.
  *
  * Идемпотентен: повторный запуск не создаст дублей (UF_UNIQUE_KEY в RewardLog).
  */
@@ -62,7 +62,7 @@ echo "types: " . implode(', ', $types) . "\n\n";
 function listZeroPoints(): array
 {
     $out = [];
-    foreach (['habits', 'tasks', 'theme_lectures', 'general_lectures', 'charging'] as $ibKey) {
+    foreach (['habits', 'tasks', 'theme_lectures', 'general_lectures', 'charging', 'reflections'] as $ibKey) {
         $ibId = (int)\X5\Pwa\Settings::iblockId($ibKey);
         if ($ibId <= 0) continue;
 
@@ -102,12 +102,12 @@ if ($zeroPoints) {
 // ────────────────────────────────────────────────────────────────
 $summary = [
     'checked'   => 0,
-    'would_add' => 0, // записей, которые были бы начислены
-    'added'     => 0, // реально начислено
-    'already'   => 0, // уже было начислено ранее
-    'skipped'   => 0, // не подходит по бизнес-правилам (points=0, дата и т.п.)
-    'points'    => 0, // суммарно баллов, которые были/будут начислены
-    'details'   => [], // первые N примеров
+    'would_add' => 0,
+    'added'     => 0,
+    'already'   => 0,
+    'skipped'   => 0,
+    'points'    => 0,
+    'details'   => [],
 ];
 
 function recordResult(array &$summary, string $verdict, string $uid, string $type, string $actionId, int $points, string $title): void
@@ -134,9 +134,6 @@ function recordResult(array &$summary, string $verdict, string $uid, string $typ
     }
 }
 
-/**
- * Универсальный вызов award с dry-run.
- */
 function tryAward(
     bool $apply,
     array &$summary,
@@ -167,7 +164,6 @@ function tryAward(
             recordResult($summary, 'skip', $uid, $type, $actionId, 0, $title . ' [ERR: ' . $e->getMessage() . ']');
         }
     } else {
-        // Dry-run: просто показываем, что было бы начислено (без записи в БД)
         recordResult($summary, 'add', $uid, $type, $actionId, $points, $title);
     }
 }
@@ -205,7 +201,6 @@ function processHabits(bool $apply, string $since, string $uidFilter, array &$su
 
     echo "   Исходных выполнений: " . count($rows) . "\n";
 
-    // Группируем по (uid, habitId, localDate) — считаем сколько раз за день
     $groups = [];
     foreach ($rows as $r) {
         $uid = (string)$r['UF_UID'];
@@ -233,7 +228,6 @@ function processHabits(bool $apply, string $since, string $uidFilter, array &$su
         $times  = (int)($cfg['timesPerDay'] ?? 1);
 
         if ($g['count'] < $times) {
-            // норма дня не выполнена — награда не полагается
             continue;
         }
 
@@ -288,14 +282,12 @@ function processTasks(bool $apply, string $since, string $uidFilter, array &$sum
         $elementId = (int)$m[1];
         $taskDate  = $m[2];
 
-        // Локальная дата пользователя на момент выполнения
         $tz = Storage::getUserTzOffsetMin($uid);
         $offsetMs = $tz * 60 * 1000;
         $ts = strtotime((string)$r['UF_COMPLETED_AT']);
         if ($ts <= 0) continue;
         $localDate = gmdate('Y-m-d', (int)(($ts * 1000 + $offsetMs) / 1000));
 
-        // resolveTaskInfo кешируем по elementId
         if (!isset($resolveCache[$elementId])) {
             $resolveCache[$elementId] = RewardsBuilder::resolveTaskInfo($elementId);
         }
@@ -405,6 +397,77 @@ function processLectures(bool $apply, string $since, string $uidFilter, array &$
 }
 
 // ────────────────────────────────────────────────────────────────
+// REFLECTIONS
+// ────────────────────────────────────────────────────────────────
+function processReflections(bool $apply, string $since, string $uidFilter, array &$summary): void
+{
+    echo "── Рефлексии (reflection) ──\n";
+
+    $conn = Application::getConnection();
+    $sqlHelper = $conn->getSqlHelper();
+
+    $filter = "UF_SENT_AT >= '" . $sqlHelper->forSql($since . ' 00:00:00') . "'";
+    if ($uidFilter !== '') {
+        $filter .= " AND UF_UID = '" . $sqlHelper->forSql($uidFilter) . "'";
+    }
+
+    $rows = $conn->query(
+        "SELECT UF_UID, UF_LOCAL_DATE, UF_SENT_AT
+         FROM x5_pwa_reflections
+         WHERE {$filter}
+         ORDER BY UF_SENT_AT ASC"
+    )->fetchAll();
+
+    echo "   Исходных рефлексий: " . count($rows) . "\n";
+
+    foreach ($rows as $r) {
+        $uid       = (string)$r['UF_UID'];
+        $localDate = (string)($r['UF_LOCAL_DATE'] ?? '');
+
+        if ($localDate === '') {
+            $tz = Storage::getUserTzOffsetMin($uid);
+            $offsetMs = $tz * 60 * 1000;
+            $ts = strtotime((string)$r['UF_SENT_AT']);
+            if ($ts > 0) {
+                $localDate = gmdate('Y-m-d', (int)(($ts * 1000 + $offsetMs) / 1000));
+            }
+        }
+        if ($localDate === '') {
+            $summary['skipped']++;
+            continue;
+        }
+
+        // Баллы: из ИБ (через ReflectionBuilder), fallback — Settings
+        $points = 0;
+        $title  = 'Рефлексия за ' . $localDate;
+        try {
+            $setting = \X5\Pwa\ReflectionBuilder::getForDate($localDate);
+            if (!empty($setting['title'])) {
+                $title = 'Рефлексия: ' . $setting['title'];
+            }
+            $points = (int)($setting['rewardPoints'] ?? 0);
+        } catch (\Throwable $e) {
+            // fallback ниже
+        }
+        if ($points <= 0) {
+            $points = (int)\X5\Pwa\Settings::rewardReflectionPoints();
+        }
+
+        tryAward(
+            $apply, $summary,
+            $uid, RewardsBuilder::TYPE_REFLECTION,
+            $localDate,
+            $points,
+            $title,
+            $localDate,
+            fn() => RewardsBuilder::awardReflection($uid, $localDate)
+        );
+    }
+
+    echo "\n";
+}
+
+// ────────────────────────────────────────────────────────────────
 // STEPS
 // ────────────────────────────────────────────────────────────────
 function processSteps(bool $apply, string $since, string $uidFilter, array &$summary, bool $wantSent, bool $wantApproved): void
@@ -428,19 +491,24 @@ function processSteps(bool $apply, string $since, string $uidFilter, array &$sum
 
     echo "   Исходных записей шагов: " . count($rows) . "\n";
 
+    $sentPoints     = (int)\X5\Pwa\Settings::rewardStepsSentPoints();     // дефолт 0
+    $approvedPoints = (int)\X5\Pwa\Settings::rewardStepsApprovedPoints(); // дефолт 5
+
+    echo "   Настройки: отправка = {$sentPoints}, подтверждение = {$approvedPoints}\n";
+
     foreach ($rows as $r) {
         $uid       = (string)$r['UF_UID'];
         $localDate = (string)$r['UF_LOCAL_DATE'];
         $status    = (string)($r['UF_STATUS'] ?? 'N');
 
-        // Отправка: начисляем для статусов N (ждёт) и Y (одобрено).
-        // Для R (отклонено) — не начисляем, чтобы не выдавать награду за отказ.
+        // Отправка: начисляем для N (ждёт) и Y (одобрено).
+        // Для R (отклонено) — не начисляем.
         if ($wantSent && in_array($status, ['N', 'Y'], true)) {
             tryAward(
                 $apply, $summary,
                 $uid, RewardsBuilder::TYPE_STEPS_SENT,
                 $localDate,
-                (int)\X5\Pwa\Settings::getInt('reward_steps_sent_points', 1),
+                $sentPoints,
                 'Шаги за ' . $localDate,
                 $localDate,
                 fn() => RewardsBuilder::awardStepsSent($uid, $localDate)
@@ -453,7 +521,7 @@ function processSteps(bool $apply, string $since, string $uidFilter, array &$sum
                 $apply, $summary,
                 $uid, RewardsBuilder::TYPE_STEPS_APPROVED,
                 $localDate,
-                (int)\X5\Pwa\Settings::getInt('reward_steps_approved_points', 10),
+                $approvedPoints,
                 'Шаги подтверждены за ' . $localDate,
                 $localDate,
                 fn() => RewardsBuilder::awardStepsApproved($uid, $localDate)
@@ -530,6 +598,9 @@ if (in_array(RewardsBuilder::TYPE_LECTURE, $types, true) || in_array(RewardsBuil
         in_array(RewardsBuilder::TYPE_LECTURE, $types, true),
         in_array(RewardsBuilder::TYPE_CHARGING, $types, true)
     );
+}
+if (in_array(RewardsBuilder::TYPE_REFLECTION, $types, true)) {
+    processReflections($apply, $since, $uidFilter, $summary);
 }
 if (in_array(RewardsBuilder::TYPE_STEPS_SENT, $types, true) || in_array(RewardsBuilder::TYPE_STEPS_APPROVED, $types, true)) {
     processSteps(

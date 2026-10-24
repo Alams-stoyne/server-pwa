@@ -81,7 +81,7 @@ class EventsBuilder
             ];
             if ($e['BUTTON_TEXT'] !== '') $item['buttonText'] = $e['BUTTON_TEXT'];
             if ($e['REWARD_TEXT'] !== '') $item['rewardText'] = $e['REWARD_TEXT'];
-            if (int $e['REWARD_POINTS'] > 0 ) $item['rewardPoints'] = $e['REWARD_POINTS'];
+            if ( intval($e['REWARD_POINTS']) > 0 ) $item['rewardPoints'] = $e['REWARD_POINTS'];
 
             $events[] = $item;
         }
@@ -168,52 +168,81 @@ class EventsBuilder
 
     // ───────── Запись действий ─────────
 
+    /**
+     * @return array{
+     *   ok:bool, reason:?string, clickedAt:?string, already:bool,
+     *   confirmedAt:?string, rewardPoints:int, rewardText:string
+     * }
+     */
     public static function recordClick(string $uid, string $eventId): array
     {
         $uid     = trim($uid);
         $eventId = trim($eventId);
 
         if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
-            return ['ok' => false, 'reason' => 'UID_NOT_FOUND', 'clickedAt' => null, 'already' => false];
+            return self::clickResult('UID_NOT_FOUND');
         }
         if ($eventId === '') {
-            return ['ok' => false, 'reason' => 'EVENT_NOT_FOUND', 'clickedAt' => null, 'already' => false];
+            return self::clickResult('EVENT_NOT_FOUND');
         }
 
         if (Storage::isBlocked($uid) || !Storage::getUidBinding($uid)) {
-            return ['ok' => false, 'reason' => 'UID_NOT_FOUND', 'clickedAt' => null, 'already' => false];
+            return self::clickResult('UID_NOT_FOUND');
         }
 
         $event = self::getByCode($eventId);
         if (!$event) {
-            return ['ok' => false, 'reason' => 'EVENT_NOT_FOUND', 'clickedAt' => null, 'already' => false];
+            return self::clickResult('EVENT_NOT_FOUND');
         }
 
         if (!self::checkClickRate($uid)) {
-            return ['ok' => false, 'reason' => 'RATE_LIMITED', 'clickedAt' => null, 'already' => false];
+            return self::clickResult('RATE_LIMITED');
         }
 
         $existing = Storage::getEventAction($uid, $eventId);
 
+        // Строка уже есть и CLICKED_AT не пуст — НЕ перезаписываем,
+        // но возвращаем полный контекст, включая CONFIRMED_AT (если уже подтверждено).
         if ($existing && !empty($existing['UF_CLICKED_AT'])) {
             return [
-                'ok'        => true,
-                'reason'    => 'OK',
-                'clickedAt' => self::fmtDt($existing['UF_CLICKED_AT']),
-                'already'   => true,
+                'ok'           => true,
+                'reason'       => 'OK',
+                'clickedAt'    => self::fmtDt($existing['UF_CLICKED_AT']),
+                'already'      => true,
+                'confirmedAt'  => !empty($existing['UF_CONFIRMED_AT'])
+                    ? self::fmtDt($existing['UF_CONFIRMED_AT'])
+                    : null,
+                'rewardPoints' => (int)($existing['UF_REWARD_POINTS'] ?? 0),
+                'rewardText'   => (string)($existing['UF_REWARD_TEXT'] ?? ''),
             ];
         }
 
         $res = Storage::upsertEventClick($uid, $eventId, $event);
         if (!$res['ok']) {
-            return ['ok' => false, 'reason' => 'DB_ERROR', 'clickedAt' => null, 'already' => false];
+            return self::clickResult('DB_ERROR');
         }
 
         return [
-            'ok'        => true,
-            'reason'    => 'OK',
-            'clickedAt' => $res['clickedAt'],
-            'already'   => false,
+            'ok'           => true,
+            'reason'       => 'OK',
+            'clickedAt'    => $res['clickedAt'],
+            'already'      => false,
+            'confirmedAt'  => null,
+            'rewardPoints' => 0,
+            'rewardText'   => '',
+        ];
+    }
+
+    private static function clickResult(string $reason): array
+    {
+        return [
+            'ok'           => false,
+            'reason'       => $reason,
+            'clickedAt'    => null,
+            'already'      => false,
+            'confirmedAt'  => null,
+            'rewardPoints' => 0,
+            'rewardText'   => '',
         ];
     }
 

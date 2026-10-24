@@ -26,10 +26,21 @@ return [
                 'icon' => 'learning_menu_icon',
             ],
             [
-                'text' => 'Шагомер',
-                'url'  => 'x5_pwa_steps.php?lang=' . LANGUAGE_ID,
-                'icon' => 'update_menu_icon',
+                'text'     => 'Шагомер',
+                'url'      => 'x5_pwa_steps.php?lang=' . LANGUAGE_ID,
+                'more_url' => ['x5_pwa_steps_leaderboard.php'],
+                'icon'     => 'update_menu_icon',
             ],
+
+            // ── Альтернатива: отдельный подпункт рядом с «Шагомер».
+            //    Если хотите видеть «ТОП» отдельной строкой — раскомментируйте:
+            
+            [
+                'text' => 'ТОП шагомера',
+                'url'  => 'x5_pwa_steps_leaderboard.php?lang=' . LANGUAGE_ID,
+                'icon' => 'statistic_menu_icon',
+            ],
+
             [
                 'text'     => 'Техподдержка',
                 'url'      => 'x5_pwa_support.php?lang=' . LANGUAGE_ID,

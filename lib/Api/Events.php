@@ -8,149 +8,232 @@ class Events
 {
     /**
      * POST /events/status
-     * Body: { ID_USER, EVENT_ID? }
-     * Ответ: { RESULT: 'OK', STATES: { eventId: { CLICKED_AT, CONFIRMED_AT } } }
+     *
+     * Возвращает два блока:
+     *   • STATUS — активность пользователя (обратная совместимость);
+     *   • STATES — статусы клика/подтверждения по каждому событию
+     *     (для восстановления после переустановки приложения).
+     *
+     * Ответ:
+     *   {
+     *     RESULT: "OK",
+     *     STATUS: {
+     *       HABITS: [], LAST_READ: ?, LAST_TASK: ?, LAST_HABIT: ?
+     *     },
+     *     STATES: {
+     *       "test-23": { CLICKED_AT: "...", CONFIRMED_AT: "..." },
+     *       "test-24": { CLICKED_AT: "...", CONFIRMED_AT: null }
+     *     }
+     *   }
      */
-    public static function status(array $b): array
+    public static function status(array $input): array
     {
-        $uid = trim((string)($b['ID_USER'] ?? ''));
+        $uid = trim((string)(
+            $input['uid']
+            ?? $input['UID']
+            ?? $input['ID_USER']
+            ?? ''
+        ));
+
         if ($uid === '') {
-            return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required', 'STATES' => (object)[]];
-        }
-        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
-            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid ID_USER', 'STATES' => (object)[]];
-        }
-
-        if (Storage::isBlocked($uid)) {
-            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.', 'STATES' => (object)[]];
+            return [
+                'RESULT'  => 'ERROR',
+                'MESSAGE' => 'uid required',
+            ];
         }
 
-        $eventId = null;
-        if (isset($b['EVENT_ID']) && $b['EVENT_ID'] !== '') {
-            $eventId = trim((string)$b['EVENT_ID']);
-        }
+        // ─── Блок 1: активность (как было) ───
+        $stats = [
+            'HABITS'    => [],
+            'LAST_READ' => null,
+            'LAST_TASK' => null,
+            'LAST_HABIT'=> null,
+        ];
 
-        $states = EventsBuilder::getStatesForUser($uid, $eventId);
+        $reads     = Storage::getReads($uid);
+        $tasks     = Storage::getTasks($uid);
+        $habitLogs = Storage::getHabits($uid);
+
+        $lastRead = null;
+        foreach ($reads as $r) {
+            $ts = strtotime((string)$r);
+            if ($ts && (!$lastRead || $ts > $lastRead)) $lastRead = $ts;
+        }
+        $stats['LAST_READ'] = $lastRead ? date('Y-m-d\TH:i:sP', $lastRead) : null;
+
+        $lastTask = null;
+        foreach ($tasks as $t) {
+            $ts = strtotime((string)$t);
+            if ($ts && (!$lastTask || $ts > $lastTask)) $lastTask = $ts;
+        }
+        $stats['LAST_TASK'] = $lastTask ? date('Y-m-d\TH:i:sP', $lastTask) : null;
+
+        $lastHabit = null;
+        foreach ($habitLogs as $habitId => $logs) {
+            foreach ((array)$logs as $log) {
+                $ts = strtotime((string)$log);
+                if ($ts && (!$lastHabit || $ts > $lastHabit)) $lastHabit = $ts;
+            }
+        }
+        $stats['LAST_HABIT'] = $lastHabit ? date('Y-m-d\TH:i:sP', $lastHabit) : null;
+
+        // ─── Блок 2: статусы событий (новое) ───
+        $states = [];
+        try {
+            $states = EventsBuilder::getStatesForUser($uid);
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'events/status: getStates failed uid=' . substr($uid, 0, 12) . '…: '
+                . $e->getMessage(),
+                'Events::status',
+                '/x5.pwa.log'
+            );
+        }
 
         return [
             'RESULT' => 'OK',
+            'STATUS' => $stats,
             'STATES' => empty($states) ? (object)[] : $states,
         ];
     }
 
     /**
-     * POST /events/action
-     * Body: { ID_USER, EVENT_ID, ACTION: 'click'|'confirm' }
+     * Действие пользователя над событием.
+     *
+     * Принимает:
+     *   ACTION    — 'click' | 'confirm'
+     *   EVENT_ID  — код события (CODE элемента IB «События»)
+     *   ID_USER   — UID пользователя
+     *
+     * Проксирует в EventsBuilder::recordClick / recordConfirm —
+     * вся валидация (блокировка, rate-limit, таймер, NO_CLICK, EXPIRED,
+     * начисление наград) выполняется там.
+     *
+     * Ответ:
+     *   OK (click):
+     *     { RESULT, ID_USER, EVENT_ID, ACTION, CLICKED_AT, ALREADY,
+     *       CONFIRMED_AT?, REWARD_POINTS?, REWARD_TEXT? }  // * — только если уже подтверждено
+     *
+     *   OK (confirm):
+     *     { RESULT, ID_USER, EVENT_ID, ACTION,
+     *       CLICKED_AT, CONFIRMED_AT, REWARD_POINTS, REWARD_TEXT, ALREADY }
      */
-    public static function action(array $b): array
+    public static function action(array $input): array
     {
-        $uid     = trim((string)($b['ID_USER']  ?? ''));
-        $eventId = trim((string)($b['EVENT_ID'] ?? ''));
-        $action  = strtolower(trim((string)($b['ACTION'] ?? '')));
+        $uid = trim((string)(
+            $input['ID_USER']
+            ?? $input['UID']
+            ?? $input['uid']
+            ?? ''
+        ));
+
+        $action = strtolower(trim((string)(
+            $input['ACTION']
+            ?? $input['action']
+            ?? ''
+        )));
+
+        $eventId = trim((string)(
+            $input['EVENT_ID']
+            ?? $input['eventId']
+            ?? $input['event_id']
+            ?? ''
+        ));
 
         if ($uid === '') {
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required'];
         }
-        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
-            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid ID_USER'];
+        if ($action === '') {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'ACTION required'];
         }
         if ($eventId === '') {
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'EVENT_ID required'];
         }
-        if (!in_array($action, ['click', 'confirm'], true)) {
-            return ['RESULT' => 'ERROR', 'MESSAGE' => "ACTION must be 'click' or 'confirm'"];
-        }
 
+        // ─── ACTION = click ───
         if ($action === 'click') {
-            return self::handleClick($uid, $eventId);
+            $r = EventsBuilder::recordClick($uid, $eventId);
+
+            if (!$r['ok']) {
+                return [
+                    'RESULT'   => 'ERROR',
+                    'REASON'   => $r['reason'],
+                    'MESSAGE'  => self::reasonMessage($r['reason']),
+                    'ID_USER'  => $uid,
+                    'EVENT_ID' => $eventId,
+                    'ACTION'   => $action,
+                ];
+            }
+
+            $out = [
+                'RESULT'     => 'OK',
+                'ID_USER'    => $uid,
+                'EVENT_ID'   => $eventId,
+                'ACTION'     => $action,
+                'CLICKED_AT' => $r['clickedAt'],
+                'ALREADY'    => !empty($r['already']),
+            ];
+
+            // Если событие уже подтверждено — клиент должен это видеть,
+            // чтобы не показывать кнопку подтверждения повторно.
+            if (!empty($r['confirmedAt'])) {
+                $out['CONFIRMED_AT']  = $r['confirmedAt'];
+                $out['REWARD_POINTS'] = (int)($r['rewardPoints'] ?? 0);
+                $out['REWARD_TEXT']   = (string)($r['rewardText'] ?? '');
+            }
+
+            return $out;
         }
 
-        return self::handleConfirm($uid, $eventId);
-    }
+        // ─── ACTION = confirm ───
+        if ($action === 'confirm') {
+            $r = EventsBuilder::recordConfirm($uid, $eventId);
 
-    private static function handleClick(string $uid, string $eventId): array
-    {
-        $res = EventsBuilder::recordClick($uid, $eventId);
+            if (!$r['ok']) {
+                return [
+                    'RESULT'     => 'ERROR',
+                    'REASON'     => $r['reason'],
+                    'MESSAGE'    => self::reasonMessage($r['reason']),
+                    'ID_USER'    => $uid,
+                    'EVENT_ID'   => $eventId,
+                    'ACTION'     => $action,
+                    'CLICKED_AT' => $r['clickedAt'] ?? null,
+                ];
+            }
 
-        if (!$res['ok']) {
-            $status = 200;
             return [
-                'RESULT'  => (string)$res['reason'],
-                'MESSAGE' => self::clickReasonMessage((string)$res['reason']),
+                'RESULT'        => 'OK',
+                'ID_USER'       => $uid,
+                'EVENT_ID'      => $eventId,
+                'ACTION'        => $action,
+                'CLICKED_AT'    => $r['clickedAt']    ?? null,
+                'CONFIRMED_AT'  => $r['confirmedAt']  ?? null,
+                'REWARD_POINTS' => (int)($r['rewardPoints'] ?? 0),
+                'REWARD_TEXT'   => (string)($r['rewardText'] ?? ''),
+                'ALREADY'       => $r['reason'] === 'ALREADY_CONFIRMED',
             ];
         }
 
+        // ─── Прочие ACTION ───
         return [
-            'RESULT'     => 'OK',
-            'CLICKED_AT' => $res['clickedAt'],
-            'ALREADY'    => (bool)$res['already'],
+            'RESULT'  => 'ERROR',
+            'MESSAGE' => 'Unknown ACTION: ' . $action,
+            'ALLOWED' => ['click', 'confirm'],
         ];
     }
 
-    private static function handleConfirm(string $uid, string $eventId): array
+    private static function reasonMessage(string $reason): string
     {
-        $res = EventsBuilder::recordConfirm($uid, $eventId);
-
-        switch ($res['reason']) {
-            case 'OK':
-                return [
-                    'RESULT'        => 'OK',
-                    'CLICKED_AT'    => $res['clickedAt'],
-                    'CONFIRMED_AT'  => $res['confirmedAt'],
-                    'REWARD_TEXT'   => $res['rewardText'],
-                    'REWARD_POINTS' => (int)$res['rewardPoints'],
-                ];
-
-            case 'ALREADY_CONFIRMED':
-                return [
-                    'RESULT'        => 'ALREADY_CONFIRMED',
-                    'MESSAGE'       => 'Событие уже подтверждено. Награда не начисляется повторно.',
-                    'CLICKED_AT'    => $res['clickedAt'],
-                    'CONFIRMED_AT'  => $res['confirmedAt'],
-                    'REWARD_TEXT'   => $res['rewardText'],
-                    'REWARD_POINTS' => (int)$res['rewardPoints'],
-                ];
-
-            case 'TOO_EARLY':
-                return [
-                    'RESULT'     => 'TOO_EARLY',
-                    'MESSAGE'    => 'Таймер ещё не истёк. Подождите и попробуйте снова.',
-                    'CLICKED_AT' => $res['clickedAt'],
-                ];
-
-            case 'NO_CLICK':
-                return [
-                    'RESULT'  => 'NO_CLICK',
-                    'MESSAGE' => 'Сначала нужно открыть событие (click), потом подтвердить.',
-                ];
-
-            case 'EXPIRED':
-                return [
-                    'RESULT'  => 'EXPIRED',
-                    'MESSAGE' => 'Время на подтверждение истекло (больше 24 часов с момента клика).',
-                ];
-
-            case 'EVENT_NOT_FOUND':
-                return ['RESULT' => 'EVENT_NOT_FOUND', 'MESSAGE' => 'Событие не найдено.'];
-
-            case 'UID_NOT_FOUND':
-                return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
-
-            case 'RATE_LIMITED':
-                return ['RESULT' => 'RATE_LIMITED', 'MESSAGE' => 'Слишком много подтверждений за сутки.'];
-
-            default:
-                return ['RESULT' => 'ERROR', 'MESSAGE' => 'Не удалось сохранить действие.'];
-        }
-    }
-
-    private static function clickReasonMessage(string $reason): string
-    {
-        switch ($reason) {
-            case 'EVENT_NOT_FOUND': return 'Событие не найдено.';
-            case 'UID_NOT_FOUND':   return 'Пользователь не найден.';
-            case 'RATE_LIMITED':    return 'Слишком много кликов за час.';
-            default:                return 'Не удалось записать клик.';
-        }
+        return [
+            'OK'                => 'OK',
+            'UID_NOT_FOUND'     => 'Пользователь не найден или заблокирован.',
+            'EVENT_NOT_FOUND'   => 'Событие не найдено.',
+            'RATE_LIMITED'      => 'Слишком много действий. Попробуйте позже.',
+            'NO_CLICK'          => 'Сначала нужно нажать на событие (ACTION=click).',
+            'ALREADY_CONFIRMED' => 'Событие уже подтверждено ранее.',
+            'TOO_EARLY'         => 'Слишком рано подтверждать — таймер ещё не истёк.',
+            'EXPIRED'           => 'Подтверждение устарело (прошло больше 24 часов).',
+            'DB_ERROR'          => 'Ошибка записи. Попробуйте ещё раз.',
+        ][$reason] ?? $reason;
     }
 }

@@ -82,6 +82,24 @@ class ContentBuilder
         return ThemesResolver::resolve($raw);
     }
 
+    /**
+     * Достаёт REWARD_POINTS из свойств. Поддерживает int или строку.
+     * Отрицательные значения считаются нулём.
+     */
+    private static function extractRewardPoints(array $props): int
+    {
+        if (empty($props['REWARD_POINTS'])) return 0;
+
+        $v = $props['REWARD_POINTS']['VALUE'] ?? null;
+        if (is_array($v)) $v = reset($v);
+
+        $v = trim((string)$v);
+        if ($v === '') return 0;
+
+        $int = (int)$v;
+        return $int > 0 ? $int : 0;
+    }
+
     public static function _debugExtractTheme(int $iblockId, int $elementId): ?string
     {
         $props = self::loadProps($iblockId, $elementId);
@@ -112,9 +130,10 @@ class ContentBuilder
 
             $extId = $fields['XML_ID'] ?: ($fields['CODE'] ?: (string)$fields['ID']);
 
-            $photos    = self::extractPhotos($props);
-            $videoLink = self::extractVideoLink($props);
-            $theme     = self::extractTheme($props);
+            $photos       = self::extractPhotos($props);
+            $videoLink    = self::extractVideoLink($props);
+            $theme        = self::extractTheme($props);
+            $rewardPoints = self::extractRewardPoints($props);
 
             $cover = $fields['PREVIEW_PICTURE']
                 ? \CFile::GetPath($fields['PREVIEW_PICTURE'])
@@ -128,15 +147,16 @@ class ContentBuilder
             }
 
             $out[] = [
-                'ID'          => $extId,
-                'NAME'        => $fields['NAME'],
-                'DESCRIPTION' => $fields['PREVIEW_TEXT'],
-                'TEXT'        => $fields['DETAIL_TEXT'] ?: $fields['PREVIEW_TEXT'],
-                'COVER'       => $cover,
-                'VIDEO_LINK'  => $videoLink,
-                'PHOTOS'      => $photos,
-                'THEME'       => $theme,
-                'DATE_ACTIVE' => $dateActive,
+                'ID'            => $extId,
+                'NAME'          => $fields['NAME'],
+                'DESCRIPTION'   => $fields['PREVIEW_TEXT'],
+                'TEXT'          => $fields['DETAIL_TEXT'] ?: '',
+                'COVER'         => $cover,
+                'VIDEO_LINK'    => $videoLink,
+                'PHOTOS'        => $photos,
+                'THEME'         => $theme,
+                'REWARD_POINTS' => $rewardPoints,
+                'DATE_ACTIVE'   => $dateActive,
             ];
         }
         return $out;
@@ -205,13 +225,14 @@ class ContentBuilder
         $items = self::filterByDate(self::query($id), $date);
 
         return array_map(fn($i) => [
-            'ID_LECTURE'  => $i['ID'],
-            'TITLE'       => $i['NAME'],
-            'DESCRIPTION' => $i['DESCRIPTION'],
-            'COVER'       => $i['COVER'],
-            'TEXT'        => $i['TEXT'],
-            'VIDEO_LINK'  => $i['VIDEO_LINK'],
-            'PHOTOS'      => $i['PHOTOS'],
+            'ID_LECTURE'    => $i['ID'],
+            'TITLE'         => $i['NAME'],
+            'DESCRIPTION'   => $i['DESCRIPTION'],
+            'COVER'         => $i['COVER'],
+            'TEXT'          => $i['TEXT'],
+            'VIDEO_LINK'    => $i['VIDEO_LINK'],
+            'PHOTOS'        => $i['PHOTOS'],
+            'REWARD_POINTS' => (int)($i['REWARD_POINTS'] ?? 0),
         ], $items);
     }
 
@@ -221,13 +242,14 @@ class ContentBuilder
         $items = self::filterByDate(self::query($id), $date);
 
         return array_map(fn($i) => [
-            'ID_LECTURE'  => $i['ID'],
-            'TITLE'       => $i['NAME'],
-            'DESCRIPTION' => $i['DESCRIPTION'],
-            'COVER'       => $i['COVER'],
-            'TEXT'        => $i['TEXT'],
-            'VIDEO_LINK'  => $i['VIDEO_LINK'],
-            'PHOTOS'      => $i['PHOTOS'],
+            'ID_LECTURE'    => $i['ID'],
+            'TITLE'         => $i['NAME'],
+            'DESCRIPTION'   => $i['DESCRIPTION'],
+            'COVER'         => $i['COVER'],
+            'TEXT'          => $i['TEXT'],
+            'VIDEO_LINK'    => $i['VIDEO_LINK'],
+            'PHOTOS'        => $i['PHOTOS'],
+            'REWARD_POINTS' => (int)($i['REWARD_POINTS'] ?? 0),
         ], $items);
     }
 
@@ -239,14 +261,15 @@ class ContentBuilder
         $items = self::filterByDate($items, $date);
 
         return array_map(fn($i) => [
-            'ID_LECTURE'  => $i['ID'],
-            'TITLE'       => $i['NAME'],
-            'DESCRIPTION' => $i['DESCRIPTION'],
-            'COVER'       => $i['COVER'],
-            'TEXT'        => $i['TEXT'],
-            'VIDEO_LINK'  => $i['VIDEO_LINK'],
-            'PHOTOS'      => $i['PHOTOS'],
-            'THEME'       => $i['THEME'],
+            'ID_LECTURE'    => $i['ID'],
+            'TITLE'         => $i['NAME'],
+            'DESCRIPTION'   => $i['DESCRIPTION'],
+            'COVER'         => $i['COVER'],
+            'TEXT'          => $i['TEXT'],
+            'VIDEO_LINK'    => $i['VIDEO_LINK'],
+            'PHOTOS'        => $i['PHOTOS'],
+            'THEME'         => $i['THEME'],
+            'REWARD_POINTS' => (int)($i['REWARD_POINTS'] ?? 0),
         ], $items);
     }
 
@@ -255,24 +278,25 @@ class ContentBuilder
      *
      * @return array<int, array{
      *   ID_TASK:string, TITLE:string, DESCRIPTION:string, TEXT:string,
-     *   COVER:?string, VIDEO_LINK:?string, THEME:string
+     *   COVER:?string, VIDEO_LINK:?string, THEME:string, REWARD_POINTS:int
      * }>
      */
     public static function themeTasks(string $theme, ?string $date = null): array
     {
-        $id    = Settings::iblockId('tasks');
+        $id    = Settings::iblockId('tasks'); 
         $items = self::query($id);
         $items = array_values(array_filter($items, fn($i) => $i['THEME'] === $theme));
         $items = self::filterByDate($items, $date);
 
         return array_map(fn($i) => [
-            'ID_TASK'     => $i['ID'],
-            'TITLE'       => $i['NAME'],
-            'DESCRIPTION' => $i['DESCRIPTION'],
-            'TEXT'        => $i['TEXT'],
-            'COVER'       => $i['COVER'],
-            'VIDEO_LINK'  => $i['VIDEO_LINK'],
-            'THEME'       => $i['THEME'],
+            'ID_TASK'       => $i['ID'],
+            'TITLE'         => $i['NAME'],
+            'DESCRIPTION'   => $i['DESCRIPTION'],
+            'TEXT'          => $i['TEXT'],
+            'COVER'         => $i['COVER'],
+            'VIDEO_LINK'    => $i['VIDEO_LINK'],
+            'THEME'         => $i['THEME'],
+            'REWARD_POINTS' => (int)($i['REWARD_POINTS'] ?? 0),
         ], $items);
     }
 

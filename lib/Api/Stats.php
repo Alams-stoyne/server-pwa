@@ -1,21 +1,63 @@
 <?php
 namespace X5\Pwa\Api;
 
+use X5\Pwa\S3;
+use X5\Pwa\StatsBuilder;
 use X5\Pwa\Storage;
-use X5\Pwa\Data;
 
 class Stats
 {
+    /**
+     * POST /stats/personal
+     * Body: { ID_USER, LOCAL_DATETIME?, TZ_OFFSET_MIN? }
+     *
+     * → { RESULT: 'OK', USER_PROGRESS: { ... } | null }
+     */
+    public static function personal(array $b): array
+    {
+        $uid = trim((string)($b['ID_USER'] ?? $b['UID'] ?? $b['uid'] ?? ''));
+        if ($uid === '') {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required'];
+        }
+        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid ID_USER'];
+        }
+
+        if (Storage::isBlocked($uid)) {
+            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.', 'USER_PROGRESS' => null];
+        }
+
+        $tz = Storage::parseTzOffsetFromArray($b);
+        if ($tz !== null) {
+            Storage::saveUserTzOffsetMin($uid, $tz);
+        }
+
+        Storage::touchBindingByUid($uid);
+
+        $progress = StatsBuilder::buildPersonal($uid);
+
+        return [
+            'RESULT'        => 'OK',
+            'USER_PROGRESS' => $progress,
+        ];
+    }
+
+    /**
+     * POST /stats/sync
+     *
+     * @deprecated с версии новой статистики — используйте /stats/personal.
+     * Оставлен для обратной совместимости со старым клиентом.
+     */
     public static function sync(array $b): array
     {
         $uid = (string)($b['ID_USER'] ?? 'unknown');
-        if ($uid === 'unknown') {
+        if ($uid === 'unknown' || $uid === '') {
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required'];
         }
 
-        // Обновляем «последний визит» — синхронизация тоже активность
         Storage::touchBindingByUid($uid);
 
+        // Старый формат: считаем на лету (для совместимости)
         $reads     = Storage::getReads($uid);
         $taskKeys  = Storage::getTasks($uid);
         $habitData = Storage::getHabits($uid);
@@ -79,8 +121,21 @@ class Stats
         ];
     }
 
+    /**
+     * POST/GET /stats/global
+     *
+     * @deprecated с версии новой статистики — используйте CDN ${CDN}/stats/global.json.
+     * Оставлен как алиас: читает локальный кеш S3-файла.
+     */
     public static function global(): array
     {
-        return Data::globalStats();
+        $raw = S3::readLocal('stats/global.json');
+        if ($raw !== null) {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) return $decoded;
+        }
+
+        // Fallback — сгенерировать на лету (медленнее)
+        return StatsBuilder::buildGlobal();
     }
 }

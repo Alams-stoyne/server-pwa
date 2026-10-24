@@ -108,10 +108,10 @@ class IblockSetup
                 'name' => 'X5 PWA — Настройки рефлексии',
                 'code' => 'x5pwa_reflections',
                 'props' => [
-                    'OPEN_TEXT'         => ['type' => 'S'],
-                    'SEND_TEXT'         => ['type' => 'S'],
-                    'AFTER_TEXT'        => ['type' => 'S'],
-                    'REWARD_POINTS'     => ['type' => 'N'],
+                    'OPEN_TEXT'     => ['type' => 'S'],
+                    'SEND_TEXT'     => ['type' => 'S'],
+                    'AFTER_TEXT'    => ['type' => 'S'],
+                    'REWARD_POINTS' => ['type' => 'N'],
                 ],
             ],
             'events' => [
@@ -123,6 +123,13 @@ class IblockSetup
                     'TIMER_MINS'    => ['type' => 'N'],
                     'REWARD_TEXT'   => ['type' => 'S'],
                     'REWARD_POINTS' => ['type' => 'N'],
+                ],
+            ],
+            'workplaces' => [
+                'name' => 'X5 PWA — Компании',
+                'code' => 'x5pwa_workplaces',
+                'props' => [
+                    'LOGO' => ['type' => 'F'],
                 ],
             ],
         ];

@@ -207,10 +207,18 @@ class StepsBuilder
             );
             return ['RESULT' => 'SAVE_ERROR', 'MESSAGE' => 'Не удалось сохранить запись.'];
         }
-
         // ─── Награда за отправку шагов ───
+        // По текущей бизнес-логике за отправку баллы не начисляются
+        // (reward_steps_sent_points = 0), но начисление идёт через
+        // approve модератором. Тем не менее возвращаем REWARD_POINTS
+        // в ответе — если настройка изменится, клиент получит актуальное
+        // значение без доработки.
+        $rewardPoints = 0;
         try {
-            RewardsBuilder::awardStepsSent($uid, $localDate);
+            $rewardResult = RewardsBuilder::awardStepsSent($uid, $localDate);
+            if (!empty($rewardResult['added'])) {
+                $rewardPoints = (int)$rewardResult['points'];
+            }
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile(
                 'award steps sent failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
@@ -222,6 +230,7 @@ class StepsBuilder
         return [
             'RESULT'          => 'OK',
             'SERVER_DATETIME' => gmdate('Y-m-d\TH:i:s\Z'),
+            'REWARD_POINTS'   => $rewardPoints,
         ];
     }
 

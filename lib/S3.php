@@ -35,9 +35,12 @@ class S3
      *
      * Политика:
      *   • events/YYYY-MM-DD.json  — 10 минут (админ может добавить событие
-     *     «на сегодня», клиент должен увидеть его быстро);
-     *   • stats/global.json       — 1 минута;
+     *     «на сегодня», клиент должен увидеть быстро);
+     *   • stats/global.json       — 24 часа (генерируется раз в сутки,
+     *     принудительно пересобирается при изменении данных);
      *   • manifest.json           — 1 минута;
+     *   • config/period.json      — 1 час;
+     *   • config/workplaces.json  — 1 час;
      *   • всё остальное           — 1 час.
      */
     public static function cacheControlForKey(string $key): string
@@ -46,8 +49,11 @@ class S3
 
         if (preg_match('#^events/\d{4}-\d{2}-\d{2}\.json$#', $key)) return 'public, max-age=600';
         if (preg_match('#^events/#', $key))                       return 'public, max-age=600';
-        if ($key === 'stats/global.json')                         return 'public, max-age=60';
+        if ($key === 'config/events.json')                        return 'public, max-age=600';
+        if ($key === 'stats/global.json')                         return 'public, max-age=86400';
         if ($key === 'manifest.json')                             return 'public, max-age=60';
+        if ($key === 'config/period.json')                        return 'public, max-age=3600';
+        if ($key === 'config/workplaces.json')                    return 'public, max-age=3600';
 
         return self::DEFAULT_CACHE;
     }

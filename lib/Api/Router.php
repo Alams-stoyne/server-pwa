@@ -90,7 +90,11 @@ class Router
         if ($path === '/tasks'          && $method === 'POST') return [Tasks::list($body), 200];
 
         // ─── Статистика ───
+        // Новый формат: /stats/personal — заменяет /stats/sync.
+        if ($path === '/stats/personal'    && $method === 'POST') return [Stats::personal($body), 200];
+        // Deprecated: оставлен для обратной совместимости со старым клиентом.
         if ($path === '/stats/sync'        && $method === 'POST') return [Stats::sync($body), 200];
+        // Fallback (обычно клиент берёт stats/global.json с CDN напрямую).
         if ($path === '/stats/global.json' && $method === 'GET')  return [Stats::global(), 200];
 
         // ─── Конфигурация ───

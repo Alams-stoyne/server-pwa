@@ -26,7 +26,7 @@ class Dumper
     {
         $keys = ['general_lectures', 'charging', 'theme_lectures', 'tasks',
                  'themes', 'quiz_questions', 'habits', 'today_widgets',
-                 'tutorial', 'reflections', 'events'];
+                 'tutorial', 'reflections', 'events', 'workplaces'];
         $out = [];
         foreach ($keys as $k) {
             $id = Settings::iblockId($k);
@@ -166,6 +166,7 @@ class Dumper
         ThemesResolver::resetCache();
         HabitsBuilder::resetCache();
         ReflectionBuilder::resetCache();
+        WorkplacesBuilder::resetCache();
 
         $ibIds = [
             'general_lectures' => Settings::iblockId('general_lectures'),
@@ -179,6 +180,7 @@ class Dumper
             'tutorial'         => Settings::iblockId('tutorial'),
             'reflections'      => Settings::iblockId('reflections'),
             'events'           => Settings::iblockId('events'),
+            'workplaces'       => Settings::iblockId('workplaces'),
         ];
         self::log('IB IDs: ' . json_encode($ibIds));
 
@@ -195,7 +197,6 @@ class Dumper
         $today = date('Y-m-d');
         self::log("TODAY = $today, themes=" . implode(',', $themes));
 
-        // ── Группировка лекций ──
         $groupedLectures = [];
         foreach ($raw['general_lectures'] as $it) {
             $d = $it['DATE_ACTIVE'] ?? null;
@@ -214,7 +215,6 @@ class Dumper
             $groupedLectures[$it['THEME']][$d][] = $it;
         }
 
-        // ── Группировка заданий ──
         $groupedTasks = [];
         foreach ($raw['tasks'] as $it) {
             $d = $it['DATE_ACTIVE'] ?? null;
@@ -235,7 +235,6 @@ class Dumper
             $extraThemesTasks[] = $themeKey;
         }
 
-        // ── Карта S3 ──
         $map = [];
         $byCategory = [
             'lectures' => 0, 'tasks' => 0, 'stats' => 0,
@@ -277,7 +276,6 @@ class Dumper
             }
         }
 
-        // ── Конфигурация ──
         try {
             $map['config/themes.json']     = ThemesBuilder::getAll();
             $map['config/habits.json']     = HabitsBuilder::getAll();
@@ -288,12 +286,16 @@ class Dumper
             $map['config/tutorial.json'] = [
                 'SLIDES' => TutorialBuilder::getSlides(),
             ];
-            $byCategory['config'] = 5;
+            $map['config/workplaces.json'] = WorkplacesBuilder::getForCdn();
+            $map['config/period.json'] = [
+                'START' => Settings::statsPeriodStart(),
+                'END'   => Settings::statsPeriodEnd(),
+            ];
+            $byCategory['config'] = 7;
         } catch (\Throwable $e) {
             self::log('config/* FAILED: ' . $e->getMessage(), 'Dumper config');
         }
 
-        // ── События дня: по одному файлу на дату (как лекции) ──
         try {
             $eventDates = EventsBuilder::getCdnDates();
             foreach ($eventDates as $eventDate) {
@@ -312,7 +314,6 @@ class Dumper
             self::log('events/* FAILED: ' . $e->getMessage(), 'Dumper events');
         }
 
-        // ── Статистика ──
         try {
             $map['stats/global.json'] = StatsBuilder::buildGlobal();
             $byCategory['stats'] = 1;
@@ -320,7 +321,6 @@ class Dumper
             self::log('stats/global.json FAILED: ' . $e->getMessage(), 'Dumper stats');
         }
 
-        // ── Заливка основного пакета ──
         $sent = 0; $failed = 0; $errors = [];
         $manifest = [
             'updated_at'   => (new \Bitrix\Main\Type\DateTime())->toString(),
@@ -354,7 +354,6 @@ class Dumper
             (string)json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
         );
 
-        // ── Шагомер: рейтинг + школа ──
         try {
             $stepRes = self::regenerateStepLeaderboards(true);
             $sent   += (int)($stepRes['sent']   ?? 0);
@@ -389,14 +388,15 @@ class Dumper
         $out = [];
         foreach ($list as $l) {
             $out[] = [
-                'ID_LECTURE'  => ($l['ID'] ?? 'x') . '-' . $date,
-                'TITLE'       => ($l['NAME'] ?? ''),
-                'DESCRIPTION' => $l['DESCRIPTION'] ?? '',
-                'COVER'       => $l['COVER'] ?? null,
-                'TEXT'        => $l['TEXT'] ?? '',
-                'VIDEO_LINK'  => $l['VIDEO_LINK'] ?? null,
-                'PHOTOS'      => $l['PHOTOS'] ?? [],
-                'DATE'        => $date,
+                'ID_LECTURE'    => ($l['ID'] ?? 'x') . '-' . $date,
+                'TITLE'         => ($l['NAME'] ?? ''),
+                'DESCRIPTION'   => $l['DESCRIPTION'] ?? '',
+                'COVER'         => $l['COVER'] ?? null,
+                'TEXT'          => $l['TEXT'] ?? '',
+                'VIDEO_LINK'    => $l['VIDEO_LINK'] ?? null,
+                'PHOTOS'        => $l['PHOTOS'] ?? [],
+                'REWARD_POINTS' => (int)($l['REWARD_POINTS'] ?? 0),
+                'DATE'          => $date,
             ];
         }
         return $out;
@@ -407,13 +407,14 @@ class Dumper
         $out = [];
         foreach ($list as $t) {
             $out[] = [
-                'ID_TASK'     => ($t['ID'] ?? 'x') . '-' . $date,
-                'DATE'        => $date,
-                'TITLE'       => $t['NAME'] ?? '',
-                'DESCRIPTION' => $t['DESCRIPTION'] ?? '',
-                'TEXT'        => $t['TEXT'] ?? '',
-                'COVER'       => $t['COVER'] ?? null,
-                'VIDEO_LINK'  => $t['VIDEO_LINK'] ?? null,
+                'ID_TASK'       => ($t['ID'] ?? 'x') . '-' . $date,
+                'DATE'          => $date,
+                'TITLE'         => $t['NAME'] ?? '',
+                'DESCRIPTION'   => $t['DESCRIPTION'] ?? '',
+                'TEXT'          => $t['TEXT'] ?? '',
+                'COVER'         => $t['COVER'] ?? null,
+                'VIDEO_LINK'    => $t['VIDEO_LINK'] ?? null,
+                'REWARD_POINTS' => (int)($t['REWARD_POINTS'] ?? 0),
             ];
         }
         return $out;

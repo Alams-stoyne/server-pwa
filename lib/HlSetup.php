@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 14;
+        return 15;
     }
 
     public static function config(): array
@@ -42,6 +42,11 @@ class HlSetup
                     'UF_HABIT_SELECTED_AT' => ['datetime', []],
                     // Кеш баланса наград
                     'UF_REWARD_BALANCE'    => ['integer', []],
+                    // Кеш рейтинга и эффективности (пересчитывается Scheduler'ом)
+                    'UF_RANK'              => ['integer', []],
+                    'UF_EFFICIENCY_ALL'    => ['double', []],
+                    'UF_EFFICIENCY_DAY'    => ['double', []],
+                    'UF_HABITS_DAYS'       => ['integer', []],
                 ],
             ],
             'UserStates' => [
@@ -239,6 +244,16 @@ class HlSetup
                     'UF_CREATED_AT'  => ['datetime', []],
                 ],
             ],
+            // Кеш максимума яблок по дате — чтобы не считать на каждый запрос
+            'DailyMax' => [
+                'name'  => 'X5PwaDailyMax',
+                'table' => 'x5_pwa_daily_max',
+                'fields' => [
+                    'UF_DATE'          => ['string', ['SIZE' => 10]],
+                    'UF_MAX_APPLES'    => ['integer', []],
+                    'UF_CALCULATED_AT' => ['datetime', []],
+                ],
+            ],
         ];
     }
 
@@ -344,11 +359,16 @@ class HlSetup
 
         $indexes = [
             'x5_pwa_uid_bindings' => [
-                'idx_x5pwa_bindings_total'    => 'UF_TOTAL_STEPS',
-                'idx_x5pwa_bindings_workpl'   => 'UF_WORKPLACE',
-                'idx_x5pwa_bindings_habit'    => 'UF_HABIT_ID',
-                'idx_x5pwa_bindings_consent'  => 'UF_CONSENT_GRANTED',
-                'idx_x5pwa_bindings_balance'  => 'UF_REWARD_BALANCE',
+                'idx_x5pwa_bindings_total'       => 'UF_TOTAL_STEPS',
+                'idx_x5pwa_bindings_workpl'      => 'UF_WORKPLACE',
+                'idx_x5pwa_bindings_habit'       => 'UF_HABIT_ID',
+                'idx_x5pwa_bindings_consent'     => 'UF_CONSENT_GRANTED',
+                'idx_x5pwa_bindings_balance'     => 'UF_REWARD_BALANCE',
+                'idx_x5pwa_bindings_rank'        => 'UF_RANK',
+                'idx_x5pwa_bindings_eff_all'     => 'UF_EFFICIENCY_ALL',
+                'idx_x5pwa_bindings_eff_day'     => 'UF_EFFICIENCY_DAY',
+                'idx_x5pwa_bindings_comp_eff'    => 'UF_WORKPLACE, UF_EFFICIENCY_ALL',
+                'idx_x5pwa_bindings_last_seen'   => 'UF_LAST_SEEN_AT',
             ],
             'x5_pwa_steps' => [
                 'idx_x5pwa_steps_uid_status'  => 'UF_UID, UF_STATUS',
@@ -390,6 +410,9 @@ class HlSetup
                 'idx_x5pwa_reward_uid_t'   => 'UF_UID, UF_ACTION_TYPE',
                 'idx_x5pwa_reward_uid_d'   => 'UF_UID, UF_LOCAL_DATE',
                 'idx_x5pwa_reward_date'    => 'UF_LOCAL_DATE',
+            ],
+            'x5_pwa_daily_max' => [
+                'uniq_x5pwa_dailymax_date' => 'unique:UF_DATE',
             ],
         ];
 

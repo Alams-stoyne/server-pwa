@@ -537,7 +537,7 @@ class SupportBuilder
     public static function deleteTicket(int $ticketId): bool
     {
         $ticketsDc = Storage::dataClass('X5PwaSupportTickets');
-        $ticket = $ticketsDc->getList(['filter' => ['=ID' => $ticketId], 'limit' => 1])->fetch();
+        $ticket = $ticketsDc::getList(['filter' => ['=ID' => $ticketId], 'limit' => 1])->fetch();
         if (!$ticket) return false;
 
         $msgDc = Storage::dataClass('X5PwaSupportMessages');

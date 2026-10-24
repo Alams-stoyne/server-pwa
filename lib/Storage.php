@@ -270,7 +270,7 @@ class Storage
             $deleted['X5PwaSupportMessages'] = 'ERR: ' . $e->getMessage();
         }
 
-        // 3. Остальные таблицы (включая RewardLog)
+        // 3. Остальные таблицы
         $sources = [
             'X5PwaLectureReads'    => 'UF_UID',
             'X5PwaTaskCompletions' => 'UF_UID',
@@ -1248,9 +1248,6 @@ class Storage
 
     // ───────── Rewards ─────────
 
-    /**
-     * Запись в RewardLog. На duplicate key бросает исключение.
-     */
     public static function addRewardLog(array $entry): void
     {
         $dc = self::dataClass('X5PwaRewardLog');
@@ -1266,10 +1263,6 @@ class Storage
         ]);
     }
 
-    /**
-     * Баланс из кеша UidBindings.UF_REWARD_BALANCE.
-     * Если поле NULL (старый пользователь, до миграции) — пересчитываем и сохраняем.
-     */
     public static function getRewardBalance(string $uid): int
     {
         try {
@@ -1291,9 +1284,6 @@ class Storage
         }
     }
 
-    /**
-     * Атомарный инкремент кеша.
-     */
     public static function incrementRewardBalance(string $uid, int $delta): void
     {
         if ($delta === 0) return;
@@ -1319,9 +1309,6 @@ class Storage
         }
     }
 
-    /**
-     * Пересчитывает баланс из лога (SUM UF_POINTS) и записывает в кеш.
-     */
     public static function recalcRewardBalance(string $uid): int
     {
         try {
@@ -1348,11 +1335,6 @@ class Storage
         }
     }
 
-    /**
-     * Пагинированная история начислений.
-     *
-     * @return array{items:array,total:int,page:int,perPage:int,pages:int}
-     */
     public static function getRewardHistory(string $uid, array $params = []): array
     {
         try {
@@ -1418,4 +1400,324 @@ class Storage
             'pages'   => $noPaging ? 1 : ($total > 0 ? (int)ceil($total / $perPage) : 1),
         ];
     }
+
+    // ───────── DailyMax (кеш максимума яблок на дату) ─────────
+
+    public static function getDailyMaxFromCache(string $date): ?int
+    {
+        try {
+            $dc = self::dataClass('X5PwaDailyMax');
+            $row = $dc::getList([
+                'select' => ['UF_MAX_APPLES'],
+                'filter' => ['=UF_DATE' => $date],
+                'limit'  => 1,
+            ])->fetch();
+            if ($row === false || $row['UF_MAX_APPLES'] === null) return null;
+            return (int)$row['UF_MAX_APPLES'];
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    public static function saveDailyMax(string $date, int $max): void
+    {
+        try {
+            $dc = self::dataClass('X5PwaDailyMax');
+            $existing = $dc::getList([
+                'select' => ['ID'],
+                'filter' => ['=UF_DATE' => $date],
+                'limit'  => 1,
+            ])->fetch();
+            if ($existing) {
+                $dc::update((int)$existing['ID'], [
+                    'UF_MAX_APPLES'    => $max,
+                    'UF_CALCULATED_AT' => self::now(),
+                ]);
+            } else {
+                $dc::add([
+                    'UF_DATE'          => $date,
+                    'UF_MAX_APPLES'    => $max,
+                    'UF_CALCULATED_AT' => self::now(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'saveDailyMax failed date=' . $date . ': ' . $e->getMessage(),
+                'Storage::saveDailyMax',
+                '/x5.pwa.log'
+            );
+        }
+    }
+
+    // ───────── Агрегаты для статистики ─────────
+
+    /**
+     * Сумма начисленных яблок пользователем за период (по RewardLog).
+     */
+    public static function getEarnedBetween(string $uid, string $from, string $to): int
+    {
+        try {
+            $conn = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safe = $sqlHelper->forSql($uid);
+            $fromSafe = $sqlHelper->forSql($from);
+            $toSafe = $sqlHelper->forSql($to);
+
+            $row = $conn->query(
+                "SELECT COALESCE(SUM(UF_POINTS), 0) AS T
+                 FROM x5_pwa_reward_log
+                 WHERE UF_UID = '{$safe}'
+                   AND UF_LOCAL_DATE >= '{$fromSafe}'
+                   AND UF_LOCAL_DATE <= '{$toSafe}'"
+            )->fetch();
+            return (int)($row['T'] ?? 0);
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Сумма заработанных яблок пользователем за конкретную локальную дату.
+     */
+    public static function getEarnedOnDate(string $uid, string $date): int
+    {
+        return self::getEarnedBetween($uid, $date, $date);
+    }
+
+    /**
+     * Считает число полных дней выполнения выбранной привычки:
+     * дней, где COUNT(записей за локальную дату) >= timesPerDay.
+     *
+     * Опционально ограничивается периодом [$from, $to].
+     */
+    public static function getHabitFullDaysCount(
+        string $uid,
+        string $habitId,
+        int $timesPerDay,
+        ?string $from = null,
+        ?string $to = null
+    ): int {
+        if ($uid === '' || $habitId === '' || $timesPerDay <= 0) return 0;
+
+        try {
+            $dc = self::dataClass('X5PwaHabitLogs');
+            $rows = $dc::getList([
+                'select' => ['UF_COMPLETED_AT'],
+                'filter' => ['=UF_UID' => $uid, '=UF_HABIT_ID' => $habitId],
+            ])->fetchAll();
+        } catch (\Throwable $e) {
+            return 0;
+        }
+
+        if (!$rows) return 0;
+
+        $offsetMs = self::getUserTzOffsetMin($uid) * 60 * 1000;
+        $byDate = [];
+
+        foreach ($rows as $r) {
+            if (empty($r['UF_COMPLETED_AT'])) continue;
+            $ts = $r['UF_COMPLETED_AT']->getTimestamp();
+            $localMs = $ts * 1000 + $offsetMs;
+            $localDate = gmdate('Y-m-d', (int)($localMs / 1000));
+
+            if ($from !== null && $localDate < $from) continue;
+            if ($to !== null   && $localDate > $to)   continue;
+
+            $byDate[$localDate] = ($byDate[$localDate] ?? 0) + 1;
+        }
+
+        $count = 0;
+        foreach ($byDate as $n) {
+            if ($n >= $timesPerDay) $count++;
+        }
+        return $count;
+    }
+
+    /**
+     * Список UID для пересчёта статистики:
+     * согласие ПД + не заблокирован + активность за последние 24 часа.
+     */
+    public static function getActiveUidsForStats(): array
+    {
+        $conn = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+
+        $cutoff = date('Y-m-d H:i:s', time() - 86400);
+        $cutoffSafe = $sqlHelper->forSql($cutoff);
+
+        $sql = "
+            SELECT u.UF_UID
+            FROM x5_pwa_uid_bindings u
+            WHERE u.UF_CONSENT_GRANTED = 'Y'
+              AND (u.UF_BLOCKED IS NULL OR u.UF_BLOCKED = 'N')
+              AND (
+                    u.UF_LAST_SEEN_AT > '{$cutoffSafe}'
+                 OR EXISTS (SELECT 1 FROM x5_pwa_reward_log r
+                            WHERE r.UF_UID = u.UF_UID AND r.UF_CREATED_AT > '{$cutoffSafe}')
+                 OR EXISTS (SELECT 1 FROM x5_pwa_steps s
+                            WHERE s.UF_UID = u.UF_UID AND s.UF_SENT_AT > '{$cutoffSafe}')
+                 OR EXISTS (SELECT 1 FROM x5_pwa_reflections f
+                            WHERE f.UF_UID = u.UF_UID AND f.UF_SENT_AT > '{$cutoffSafe}')
+              )
+        ";
+
+        try {
+            $rows = $conn->query($sql)->fetchAll();
+            return array_values(array_map(fn($r) => (string)$r['UF_UID'], $rows));
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'getActiveUidsForStats failed: ' . $e->getMessage(),
+                'Storage::getActiveUidsForStats',
+                '/x5.pwa.log'
+            );
+            return [];
+        }
+    }
+
+    /**
+     * Минимальный набор данных пользователя для пересчёта кешей:
+     * UID, workplace, consent, created_at, total_steps, last_activity.
+     */
+    public static function getBindingsForStats(array $uids): array
+    {
+        if (!$uids) return [];
+
+        try {
+            $dc = self::dataClass('X5PwaUidBindings');
+            $rows = $dc::getList([
+                'select' => [
+                    'UF_UID', 'UF_WORKPLACE', 'UF_CONSENT_GRANTED',
+                    'UF_CREATED_AT', 'UF_TOTAL_STEPS', 'UF_LAST_SEEN_AT',
+                    'UF_HABIT_ID', 'UF_REWARD_BALANCE', 'UF_BLOCKED',
+                ],
+                'filter' => ['=UF_UID' => $uids],
+            ])->fetchAll();
+
+            $out = [];
+            foreach ($rows as $r) {
+                $out[(string)$r['UF_UID']] = [
+                    'uid'             => (string)$r['UF_UID'],
+                    'workplace'       => (string)($r['UF_WORKPLACE'] ?? ''),
+                    'consent'         => ($r['UF_CONSENT_GRANTED'] ?? '') === 'Y',
+                    'created_at'      => $r['UF_CREATED_AT'] ?? null,
+                    'created_ts'      => $r['UF_CREATED_AT'] ? $r['UF_CREATED_AT']->getTimestamp() : 0,
+                    'total_steps'     => (int)($r['UF_TOTAL_STEPS'] ?? 0),
+                    'last_seen_ts'    => $r['UF_LAST_SEEN_AT'] ? $r['UF_LAST_SEEN_AT']->getTimestamp() : 0,
+                    'habit_id'        => trim((string)($r['UF_HABIT_ID'] ?? '')),
+                    'reward_balance'  => (int)($r['UF_REWARD_BALANCE'] ?? 0),
+                    'blocked'         => ($r['UF_BLOCKED'] ?? 'N') === 'Y',
+                ];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Массовое обновление кешей статистики.
+     *
+     * @param array $rows [uid => ['rank' => int, 'eff_all' => float, 'eff_day' => float, 'habits_days' => int]]
+     */
+    public static function bulkUpdateStatsCache(array $rows): void
+    {
+        if (!$rows) return;
+
+        $conn = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+
+        foreach (array_chunk($rows, 100, true) as $chunk) {
+            try {
+                $casesRank = [];
+                $casesAll  = [];
+                $casesDay  = [];
+                $casesHab  = [];
+                $uidsSafe  = [];
+
+                foreach ($chunk as $uid => $v) {
+                    $safe = $sqlHelper->forSql($uid);
+                    $uidsSafe[] = "'{$safe}'";
+
+                    $casesRank[] = "WHEN '{$safe}' THEN " . (int)$v['rank'];
+                    $casesAll[]  = "WHEN '{$safe}' THEN " . (float)$v['eff_all'];
+                    $casesDay[]  = "WHEN '{$safe}' THEN " . (float)$v['eff_day'];
+                    $casesHab[]  = "WHEN '{$safe}' THEN " . (int)$v['habits_days'];
+                }
+
+                $inSql = implode(',', $uidsSafe);
+
+                $sql = "UPDATE x5_pwa_uid_bindings SET
+                            UF_RANK = CASE UF_UID " . implode(' ', $casesRank) . " ELSE UF_RANK END,
+                            UF_EFFICIENCY_ALL = CASE UF_UID " . implode(' ', $casesAll) . " ELSE UF_EFFICIENCY_ALL END,
+                            UF_EFFICIENCY_DAY = CASE UF_UID " . implode(' ', $casesDay) . " ELSE UF_EFFICIENCY_DAY END,
+                            UF_HABITS_DAYS = CASE UF_UID " . implode(' ', $casesHab) . " ELSE UF_HABITS_DAYS END
+                        WHERE UF_UID IN ({$inSql})";
+
+                $conn->queryExecute($sql);
+            } catch (\Throwable $e) {
+                \Bitrix\Main\Diag\Debug::writeToFile(
+                    'bulkUpdateStatsCache failed: ' . $e->getMessage(),
+                    'Storage::bulkUpdateStatsCache',
+                    '/x5.pwa.log'
+                );
+            }
+        }
+    }
+    /**
+     * Расширенный набор полей UID для /stats/personal.
+     */
+    public static function getBindingForPersonal(string $uid): ?array
+    {
+        try {
+            $dc = self::dataClass('X5PwaUidBindings');
+            $row = $dc::getList([
+                'select' => [
+                    'UF_UID', 'UF_WORKPLACE', 'UF_CONSENT_GRANTED', 'UF_BLOCKED',
+                    'UF_TOTAL_STEPS', 'UF_REWARD_BALANCE',
+                    'UF_RANK', 'UF_EFFICIENCY_ALL', 'UF_EFFICIENCY_DAY', 'UF_HABITS_DAYS',
+                ],
+                'filter' => ['=UF_UID' => $uid],
+                'limit'  => 1,
+            ])->fetch();
+            if (!$row) return null;
+
+            return [
+                'uid'             => (string)$row['UF_UID'],
+                'workplace'       => (string)($row['UF_WORKPLACE'] ?? ''),
+                'consent'         => ($row['UF_CONSENT_GRANTED'] ?? '') === 'Y',
+                'blocked'         => ($row['UF_BLOCKED'] ?? 'N') === 'Y',
+                'total_steps'     => (int)($row['UF_TOTAL_STEPS'] ?? 0),
+                'reward_balance'  => (int)($row['UF_REWARD_BALANCE'] ?? 0),
+                'rank'            => (int)($row['UF_RANK'] ?? 0),
+                'eff_all'         => (float)($row['UF_EFFICIENCY_ALL'] ?? 0),
+                'eff_day'         => (float)($row['UF_EFFICIENCY_DAY'] ?? 0),
+                'habits_days'     => (int)($row['UF_HABITS_DAYS'] ?? 0),
+            ];
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+    /**
+     * Сумма балансов по компании (workplace).
+     */
+    public static function getCompanyTotalApples(string $workplace): int
+    {
+        try {
+            $conn = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safeWp = $sqlHelper->forSql($workplace);
+
+            $row = $conn->query(
+                "SELECT COALESCE(SUM(UF_REWARD_BALANCE), 0) AS T
+                 FROM x5_pwa_uid_bindings
+                 WHERE UF_WORKPLACE = '{$safeWp}'
+                   AND UF_CONSENT_GRANTED = 'Y'
+                   AND (UF_BLOCKED IS NULL OR UF_BLOCKED = 'N')"
+            )->fetch();
+            return (int)($row['T'] ?? 0);
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+    
 }

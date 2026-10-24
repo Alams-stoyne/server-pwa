@@ -9,6 +9,11 @@ class Steps
     /**
      * POST /steps/send
      * Body: { ID_USER, STEPS, IMAGES:[base64], CONSENT, LOCAL_DATETIME }
+     *
+     * Ответ (RESULT=OK):
+     *   { RESULT, SERVER_DATETIME, REWARD_POINTS }
+     * REWARD_POINTS — сколько яблок начислено за эту отправку (обычно 0,
+     *   т.к. начисление идёт после approve модератором).
      */
     public static function send(array $b): array
     {
@@ -21,7 +26,6 @@ class Steps
             return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
         }
 
-        // Обновляем таймзону, если пришла
         $tz = Storage::parseTzOffsetFromArray($b);
         if ($tz !== null) {
             Storage::saveUserTzOffsetMin($uid, $tz);
@@ -37,7 +41,6 @@ class Steps
             $localDate
         );
 
-        // Обновляем «последний визит» — шаги тоже активность
         if (($result['RESULT'] ?? '') === 'OK') {
             Storage::touchBindingByUid($uid);
         }
