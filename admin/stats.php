@@ -7,6 +7,9 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 
 use Bitrix\Main\Loader;
 use Bitrix\Main\Config\Option;
+use X5\Pwa\Dumper;
+use X5\Pwa\Settings;
+use X5\Pwa\StatsBuilder;
 
 $moduleId   = 'x5.pwa';
 $MODULE_RIGHT = $APPLICATION->GetGroupRight($moduleId);
@@ -24,20 +27,9 @@ $error   = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()) {
     $action = (string)($_POST['x5_action'] ?? '');
 
-    if ($action === 'refresh_stats') {
-        try {
-            $r = \X5\Pwa\Dumper::regenerateStats();
-            $message = !empty($r['ok'])
-                ? 'stats/global.json обновлён и залит в S3.'
-                : 'Ошибка: ' . ($r['error'] ?? 'unknown');
-        } catch (\Throwable $e) {
-            $error = 'Исключение: ' . $e->getMessage();
-        }
-    }
-
     if ($action === 'recalc_caches') {
         try {
-            $r = \X5\Pwa\StatsBuilder::recalcAllStats();
+            $r = StatsBuilder::recalcAllStats();
             $message = sprintf(
                 'Кеши пересчитаны: обработано %d пользователей за %ss.',
                 (int)($r['processed'] ?? 0),
@@ -47,14 +39,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()) {
             $error = 'Ошибка пересчёта: ' . $e->getMessage();
         }
     }
+
+    if ($action === 'refresh_stats') {
+        try {
+            $r = Dumper::regenerateStats();
+            $message = !empty($r['ok'])
+                ? 'stats/global.json обновлён и залит в S3.'
+                : 'Ошибка: ' . ($r['error'] ?? 'unknown');
+        } catch (\Throwable $e) {
+            $error = 'Исключение: ' . $e->getMessage();
+        }
+    }
 }
 
 // ── Данные ──
-$stats       = \X5\Pwa\StatsBuilder::buildGlobal();
+$stats       = StatsBuilder::buildGlobal();
 $lastStatsAt = (int)Option::get($moduleId, 'last_stats_at', 0);
 $interval    = (int)Option::get($moduleId, 'stats_interval_sec', 600);
-$recalcSec   = \X5\Pwa\Settings::statsRecalcIntervalSec();
-$lastRecalc  = \X5\Pwa\Settings::statsRecalcLastAt();
+$recalcSec   = Settings::statsRecalcIntervalSec();
+$lastRecalc  = Settings::statsRecalcLastAt();
+
+$periodStart = Settings::statsPeriodStart();
+$periodEnd   = Settings::statsPeriodEnd();
 
 $gp        = $stats['GLOBAL_PROGRESS'] ?? [];
 $companies = $stats['COMPANIES']['LIST'] ?? [];
@@ -68,6 +74,11 @@ $fmtDate = function (?int $ts): string {
     if (!$ts || $ts <= 0) return '—';
     return date('d.m.Y H:i:s', $ts);
 };
+
+$settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
+    . '&lang=' . LANGUAGE_ID
+    . '&mid_menu=1'
+    . '&tabControl_active_tab=edit_stats';
 ?>
 <?php require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php'; ?>
 
@@ -85,7 +96,6 @@ $fmtDate = function (?int $ts): string {
     .x5pwa-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #e0efff; color: #1e6bcc; }
     .x5pwa-bar { background: #e2e5e9; height: 8px; border-radius: 4px; overflow: hidden; width: 120px; display: inline-block; vertical-align: middle; }
     .x5pwa-bar-fill { background: #3a7d1c; height: 100%; }
-    .x5pwa-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 </style>
 
 <?php if ($message): ?>
@@ -102,11 +112,17 @@ $fmtDate = function (?int $ts): string {
 <div class="x5pwa-box">
     <h3>Период статистики</h3>
     <dl style="display:grid;grid-template-columns:260px 1fr;gap:6px 12px;margin:0">
-        <dt style="color:#666">Старт</dt>
-        <dd style="margin:0"><b><?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?></b></dd>
+        <dt style="color:#666">Настройки периода</dt>
+        <dd style="margin:0">
+            Старт: <b><?= $periodStart !== '' ? htmlspecialcharsbx($periodStart) : 'авто' ?></b>
+            · Конец: <b><?= $periodEnd !== '' ? htmlspecialcharsbx($periodEnd) : 'авто (сегодня)' ?></b>
+            &nbsp;
+            <a href="<?= htmlspecialcharsbx($settingsUrl) ?>">Изменить в настройках модуля →</a>
+        </dd>
 
-        <dt style="color:#666">Конец</dt>
-        <dd style="margin:0"><b><?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?></b></dd>
+        <dt style="color:#666">Действующий период</dt>
+        <dd style="margin:0"><b><?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?></b>
+            — <b><?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?></b></dd>
 
         <dt style="color:#666">Обновление CDN</dt>
         <dd style="margin:0">Каждые <b><?= (int)$interval ?></b> сек (последнее: <?= $fmtDate((int)($lastStatsAt / 1000)) ?>)</dd>
@@ -114,11 +130,11 @@ $fmtDate = function (?int $ts): string {
         <dt style="color:#666">Пересчёт кешей</dt>
         <dd style="margin:0">Каждые <b><?= (int)$recalcSec ?></b> сек (последнее: <?= $fmtDate($lastRecalc) ?>)</dd>
 
-        <dt style="color:#666">CDN-файл</dt>
+        <dt style="color:#666">CDN-файлы</dt>
         <dd style="margin:0" class="x5pwa-mono">
-            <a href="https://cdn.x5hd.ru/stats/global.json" target="_blank">
-                https://cdn.x5hd.ru/stats/global.json
-            </a>
+            <a href="https://cdn.x5hd.ru/stats/global.json" target="_blank">stats/global.json</a>
+            ·
+            <a href="https://cdn.x5hd.ru/config/period.json" target="_blank">config/period.json</a>
         </dd>
     </dl>
 </div>
@@ -201,7 +217,7 @@ $fmtDate = function (?int $ts): string {
 </div>
 
 <div class="x5pwa-box">
-    <h3>Действия</h3>
+    <h3>Быстрые действия</h3>
     <form method="post" action="x5_pwa_stats.php?lang=<?= LANGUAGE_ID ?>" style="display:inline-block; margin-right:12px">
         <?= bitrix_sessid_post() ?>
         <input type="hidden" name="x5_action" value="recalc_caches">

@@ -18,6 +18,7 @@ class AdminSetup
             'x5_pwa_reflections.php'          => ['path' => 'admin/reflections.php',           'wrapper' => 'plain'],
             'x5_pwa_steps.php'                => ['path' => 'admin/steps.php',                 'wrapper' => 'plain'],
             'x5_pwa_steps_leaderboard.php'    => ['path' => 'admin/steps_leaderboard.php',     'wrapper' => 'plain'],
+            'x5_pwa_daily_apples.php'         => ['path' => 'admin/daily_apples.php',          'wrapper' => 'plain'],
             'x5_pwa_support.php'              => ['path' => 'admin/support.php',               'wrapper' => 'plain'],
             'x5_pwa_support_detail.php'       => ['path' => 'admin/support_detail.php',        'wrapper' => 'plain'],
             'x5_pwa_support_export.php'       => ['path' => 'admin/export_support_csv.php',    'wrapper' => 'plain'],

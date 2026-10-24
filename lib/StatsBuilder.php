@@ -12,14 +12,6 @@ class StatsBuilder
 {
     // ───────── Period ─────────
 
-    /**
-     * Возвращает [from, to] — начало и конец периода (YYYY-MM-DD).
-     *
-     * Если stats_period_start не задан — старт определяется автоматически:
-     *   max( MIN(UF_CREATED_AT) пользователей , сегодня − 365 дней ).
-     *
-     * Если stats_period_end не задан — конец = сегодня.
-     */
     public static function getEffectivePeriod(): array
     {
         $start = Settings::statsPeriodStart();
@@ -39,9 +31,6 @@ class StatsBuilder
         return [$start, $end];
     }
 
-    /**
-     * Автоматический старт: минимальная дата регистрации, но не раньше года назад.
-     */
     private static function resolveAutoStart(): string
     {
         $today = date('Y-m-d');
@@ -65,11 +54,6 @@ class StatsBuilder
         }
     }
 
-    /**
-     * Период конкретного пользователя: max(глобальный старт, его регистрация).
-     *
-     * @return array{0:string,1:string}
-     */
     public static function getUserPeriod(int $userCreatedTs, string $globalFrom, string $globalTo): array
     {
         $from = $globalFrom;
@@ -78,10 +62,271 @@ class StatsBuilder
             if ($userDate > $from) $from = $userDate;
         }
         if ($from > $globalTo) {
-            // Пользователь зарегистрировался «позже» конца периода — у него пустой период.
             return [$globalTo, $globalTo];
         }
         return [$from, $globalTo];
+    }
+
+    // ───────── Daily Apples ─────────
+
+    /**
+     * Считает максимум яблок на дату в разрезе BASE + THEMES.
+     *
+     * BASE = charging + general_lectures + events + reflection + steps
+     * THEMES[code] = theme_lectures(THEME=code) + tasks(THEME=code)
+     */
+    public static function calculateDailyApples(string $date): array
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return ['BASE' => 0, 'THEMES' => []];
+        }
+
+        $themes = ThemesResolver::getAllCodes();
+        if (!$themes) $themes = ['energy', 'antistress', 'body', 'balance'];
+
+        $themeApples = [];
+        foreach ($themes as $code) {
+            $themeApples[$code] = 0;
+        }
+
+        $base = 0;
+
+        // charging
+        $ibCharging = (int)Settings::iblockId('charging');
+        if ($ibCharging > 0) {
+            $base += self::sumRewardPointsForDate($ibCharging, $date);
+        }
+
+        // general_lectures
+        $ibGeneral = (int)Settings::iblockId('general_lectures');
+        if ($ibGeneral > 0) {
+            $base += self::sumRewardPointsForDate($ibGeneral, $date);
+        }
+
+        // events
+        $ibEvents = (int)Settings::iblockId('events');
+        if ($ibEvents > 0) {
+            $base += self::sumRewardPointsForDate($ibEvents, $date);
+        }
+
+        // reflection
+        $reflPoints = 0;
+        try {
+            $setting = ReflectionBuilder::getForDate($date);
+            $reflPoints = (int)($setting['rewardPoints'] ?? 0);
+        } catch (\Throwable $e) {}
+        if ($reflPoints <= 0) $reflPoints = Settings::rewardReflectionPoints();
+        $base += $reflPoints;
+
+        // steps
+        $base += Settings::rewardStepsSentPoints();
+        $base += Settings::rewardStepsApprovedPoints();
+
+        // theme_lectures
+        $ibTheme = (int)Settings::iblockId('theme_lectures');
+        if ($ibTheme > 0) {
+            self::sumRewardPointsForDateByTheme($ibTheme, $date, $themeApples);
+        }
+
+        // tasks
+        $ibTasks = (int)Settings::iblockId('tasks');
+        if ($ibTasks > 0) {
+            self::sumRewardPointsForDateByTheme($ibTasks, $date, $themeApples);
+        }
+
+        return [
+            'BASE'   => max(0, $base),
+            'THEMES' => $themeApples,
+        ];
+    }
+
+    /**
+     * Сумма REWARD_POINTS всех активных элементов ИБ за указанную дату.
+     *
+     * ВАЖНО: фильтр по дате делается через DATE_ACTIVE_FROM (виртуальное поле
+     * «дата начала активности без времени»), а НЕ через ACTIVE_FROM.
+     * Формат значения — формат даты сайта (SHORT), его даёт ConvertTimeStamp.
+     *
+     * Проверено диагностикой: ACTIVE_FROM с ISO/сайт-форматом не фильтрует;
+     * DATE_ACTIVE_FROM с ISO-форматом тоже не фильтрует; работает только
+     * DATE_ACTIVE_FROM + формат сайта.
+     */
+    private static function sumRewardPointsForDate(int $iblockId, string $date): int
+    {
+        if ($iblockId <= 0) return 0;
+
+        $dateTs = strtotime($date);
+        if ($dateTs === false) return 0;
+
+        $dateSite = \ConvertTimeStamp($dateTs, 'SHORT');
+        if ($dateSite === false || $dateSite === '') return 0;
+
+        $rs = \CIBlockElement::GetList(
+            ['ID' => 'ASC'],
+            [
+                'IBLOCK_ID'          => $iblockId,
+                'ACTIVE'             => 'Y',
+                'CHECK_PERMISSIONS'  => 'N',
+                '>=DATE_ACTIVE_FROM' => $dateSite,
+                '<=DATE_ACTIVE_FROM' => $dateSite,
+            ],
+            false,
+            false,
+            ['ID']
+        );
+
+        $total = 0;
+        while ($el = $rs->Fetch()) {
+            $props = \CIBlockElement::GetProperty($iblockId, (int)$el['ID'], [], ['CODE' => 'REWARD_POINTS']);
+            if ($p = $props->Fetch()) {
+                $total += max(0, (int)($p['VALUE'] ?? 0));
+            }
+        }
+        return $total;
+    }
+
+    /**
+     * Группирует REWARD_POINTS по THEME (для theme_lectures и tasks).
+     * THEME — свойство типа E (привязка к элементу ИБ «Направления»).
+     *
+     * @param array<string,int> $themeApples — модифицируется на месте
+     */
+    private static function sumRewardPointsForDateByTheme(int $iblockId, string $date, array &$themeApples): void
+    {
+        if ($iblockId <= 0) return;
+
+        $dateTs = strtotime($date);
+        if ($dateTs === false) return;
+
+        $dateSite = \ConvertTimeStamp($dateTs, 'SHORT');
+        if ($dateSite === false || $dateSite === '') return;
+
+        $rs = \CIBlockElement::GetList(
+            ['ID' => 'ASC'],
+            [
+                'IBLOCK_ID'          => $iblockId,
+                'ACTIVE'             => 'Y',
+                'CHECK_PERMISSIONS'  => 'N',
+                '>=DATE_ACTIVE_FROM' => $dateSite,
+                '<=DATE_ACTIVE_FROM' => $dateSite,
+            ],
+            false,
+            false,
+            ['ID']
+        );
+
+        while ($el = $rs->Fetch()) {
+            $elId = (int)$el['ID'];
+
+            // THEME — ID элемента ИБ «Направления»
+            $themeValue = '';
+            $props = \CIBlockElement::GetProperty($iblockId, $elId, [], ['CODE' => 'THEME']);
+            if ($p = $props->Fetch()) {
+                $themeValue = (string)($p['VALUE'] ?? '');
+            }
+            if ($themeValue === '') continue;
+
+            $themeCode = ThemesResolver::resolve($themeValue);
+            if ($themeCode === null || $themeCode === '') continue;
+
+            // REWARD_POINTS
+            $points = 0;
+            $props2 = \CIBlockElement::GetProperty($iblockId, $elId, [], ['CODE' => 'REWARD_POINTS']);
+            if ($p2 = $props2->Fetch()) {
+                $points = max(0, (int)($p2['VALUE'] ?? 0));
+            }
+
+            if (!isset($themeApples[$themeCode])) $themeApples[$themeCode] = 0;
+            $themeApples[$themeCode] += $points;
+        }
+    }
+
+    /**
+     * Максимум для конкретного пользователя на дату.
+     */
+    public static function calculateDailyMaxForUser(string $uid, string $date): int
+    {
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) return 0;
+
+        $themeCode   = trim((string)($binding['UF_THEME'] ?? ''));
+        $habitPoints = self::resolveHabitPoints((string)($binding['UF_HABIT_ID'] ?? ''));
+
+        $apples = self::getDailyApples($date);
+
+        $max = (int)($apples['BASE'] ?? 0);
+        if ($themeCode !== '' && isset($apples['THEMES'][$themeCode])) {
+            $max += (int)$apples['THEMES'][$themeCode];
+        }
+        $max += $habitPoints;
+
+        return max(0, $max);
+    }
+
+    public static function getDailyApples(string $date, array &$cache = []): array
+    {
+        if (isset($cache[$date])) return $cache[$date];
+
+        $cached = Storage::getDailyApplesFromCache($date);
+        if ($cached !== null) {
+            $cache[$date] = $cached;
+            return $cached;
+        }
+
+        $calculated = self::calculateDailyApples($date);
+        Storage::saveDailyApples($date, $calculated);
+        $cache[$date] = $calculated;
+        return $calculated;
+    }
+
+    public static function sumDailyMaxForUser(
+        string $from,
+        string $to,
+        string $themeCode,
+        int $habitPoints,
+        array &$applesCache = []
+    ): int {
+        $cursor = strtotime($from);
+        $endTs  = strtotime($to);
+        if ($cursor === false || $endTs === false || $endTs < $cursor) return 0;
+
+        $sum = 0;
+        while ($cursor <= $endTs) {
+            $d      = date('Y-m-d', $cursor);
+            $apples = self::getDailyApples($d, $applesCache);
+
+            $dayMax = (int)($apples['BASE'] ?? 0);
+            if ($themeCode !== '' && isset($apples['THEMES'][$themeCode])) {
+                $dayMax += (int)$apples['THEMES'][$themeCode];
+            }
+            $dayMax += $habitPoints;
+
+            $sum += $dayMax;
+            $cursor = strtotime('+1 day', $cursor);
+        }
+        return $sum;
+    }
+
+    private static function resolveHabitPoints(string $habitId): int
+    {
+        $habitId = trim($habitId);
+        if ($habitId === '') return 0;
+
+        foreach (HabitsBuilder::getAll() as $h) {
+            if ((string)$h['id'] === $habitId) {
+                return (int)($h['rewardPoints'] ?? 0);
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * @deprecated Глобальный максимум (BASE + все THEMES). Только для диагностики.
+     */
+    public static function calculateDailyMax(string $date): int
+    {
+        $apples = self::calculateDailyApples($date);
+        return (int)($apples['BASE'] ?? 0) + array_sum($apples['THEMES'] ?? []);
     }
 
     // ───────── Global ─────────
@@ -106,9 +351,12 @@ class StatsBuilder
         $habitsDaysTotal = 0;
         $stepsConfirmed  = 0;
 
-        // Кеш максимумов по датам (общий для всех пользователей).
-        $dailyMaxCache = [];
-        self::fillDailyMaxCache($from, $to, $dailyMaxCache);
+        $applesCache = [];
+
+        $habitPointsCache = [];
+        foreach (HabitsBuilder::getAll() as $h) {
+            $habitPointsCache[(string)$h['id']] = (int)($h['rewardPoints'] ?? 0);
+        }
 
         foreach ($bindings as $uid => $b) {
             if ($b['blocked']) continue;
@@ -126,16 +374,18 @@ class StatsBuilder
                 $wpAgg[$wp]['apples'] += (int)$b['reward_balance'];
             }
 
-            // Персональная эффективность (earned/max по его периоду)
-            $earned    = Storage::getEarnedBetween($uid, $userFrom, $userTo);
-            $maxTotal  = self::sumDailyMax($userFrom, $userTo, $dailyMaxCache);
+            $themeCode   = (string)($b['theme'] ?? '');
+            $habitId     = (string)($b['habit_id'] ?? '');
+            $habitPoints = $habitPointsCache[$habitId] ?? 0;
+
+            $earned   = Storage::getEarnedBetween($uid, $userFrom, $userTo);
+            $maxTotal = self::sumDailyMaxForUser($userFrom, $userTo, $themeCode, $habitPoints, $applesCache);
 
             if ($wp !== '' && isset($wpAgg[$wp])) {
                 $wpAgg[$wp]['earned'] += $earned;
                 $wpAgg[$wp]['max']    += $maxTotal;
             }
 
-            // Контентные агрегаты
             try {
                 $reads = Storage::getReads($uid);
                 $tasks = Storage::getTasks($uid);
@@ -151,7 +401,6 @@ class StatsBuilder
             $stepsConfirmed += (int)$b['total_steps'];
         }
 
-        // COMPANIES.LIST
         $list = [];
         foreach ($wpAgg as $code => $agg) {
             if ($agg['users'] <= 0) continue;
@@ -255,7 +504,7 @@ class StatsBuilder
 
         try {
             $rows = $conn->query(
-                "SELECT UF_UID, UF_CREATED_AT
+                "SELECT UF_UID, UF_CREATED_AT, UF_THEME, UF_HABIT_ID
                  FROM x5_pwa_uid_bindings
                  WHERE UF_WORKPLACE = '{$safeWp}'
                    AND UF_CONSENT_GRANTED = 'Y'
@@ -267,9 +516,12 @@ class StatsBuilder
 
         if (!$rows) return 0.0;
 
-        $dailyMaxCache = [];
-        self::fillDailyMaxCache($from, $to, $dailyMaxCache);
+        $habitPointsCache = [];
+        foreach (HabitsBuilder::getAll() as $h) {
+            $habitPointsCache[(string)$h['id']] = (int)($h['rewardPoints'] ?? 0);
+        }
 
+        $applesCache = [];
         $earned = 0;
         $max    = 0;
 
@@ -278,10 +530,14 @@ class StatsBuilder
             $createdTs = !empty($r['UF_CREATED_AT'])
                 ? strtotime((string)$r['UF_CREATED_AT']) : 0;
 
+            $themeCode   = trim((string)($r['UF_THEME'] ?? ''));
+            $habitId     = trim((string)($r['UF_HABIT_ID'] ?? ''));
+            $habitPoints = $habitPointsCache[$habitId] ?? 0;
+
             [$userFrom, $userTo] = self::getUserPeriod((int)$createdTs, $from, $to);
 
             $earned += Storage::getEarnedBetween($u, $userFrom, $userTo);
-            $max    += self::sumDailyMax($userFrom, $userTo, $dailyMaxCache);
+            $max    += self::sumDailyMaxForUser($userFrom, $userTo, $themeCode, $habitPoints, $applesCache);
         }
 
         if ($max <= 0) return 0.0;
@@ -305,16 +561,18 @@ class StatsBuilder
 
         $bindings = Storage::getBindingsForStats($uids);
 
-        // Заполняем DailyMax по всему периоду (один раз для всех)
-        $dailyMaxCache = [];
-        self::fillDailyMaxCache($from, $to, $dailyMaxCache);
+        $applesCache = [];
+        $cursor = strtotime($from);
+        $endTs  = strtotime($to);
+        while ($cursor <= $endTs) {
+            $d = date('Y-m-d', $cursor);
+            self::getDailyApples($d, $applesCache);
+            $cursor = strtotime('+1 day', $cursor);
+        }
 
-        $todayMax = $dailyMaxCache[$today] ?? self::calculateDailyMax($today);
-
-        $habits = HabitsBuilder::getAll();
-        $habitById = [];
-        foreach ($habits as $h) {
-            $habitById[(string)$h['id']] = $h;
+        $habitPointsCache = [];
+        foreach (HabitsBuilder::getAll() as $h) {
+            $habitPointsCache[(string)$h['id']] = (int)($h['rewardPoints'] ?? 0);
         }
 
         $computed = [];
@@ -324,18 +582,35 @@ class StatsBuilder
 
             [$userFrom, $userTo] = self::getUserPeriod($b['created_ts'], $from, $to);
 
+            $themeCode   = (string)($b['theme'] ?? '');
+            $habitId     = (string)($b['habit_id'] ?? '');
+            $habitPoints = $habitPointsCache[$habitId] ?? 0;
+
             $earnedAll   = Storage::getEarnedBetween($uid, $userFrom, $userTo);
             $earnedToday = Storage::getEarnedOnDate($uid, $today);
 
-            $maxTotal = self::sumDailyMax($userFrom, $userTo, $dailyMaxCache);
+            $maxTotal = self::sumDailyMaxForUser($userFrom, $userTo, $themeCode, $habitPoints, $applesCache);
+
+            $todayApples = $applesCache[$today] ?? self::getDailyApples($today, $applesCache);
+            $todayMax    = (int)($todayApples['BASE'] ?? 0);
+            if ($themeCode !== '' && isset($todayApples['THEMES'][$themeCode])) {
+                $todayMax += (int)$todayApples['THEMES'][$themeCode];
+            }
+            $todayMax += $habitPoints;
 
             $effAll = $maxTotal > 0 ? round($earnedAll / $maxTotal * 100, 2) : 0.0;
             $effDay = $todayMax > 0 ? round($earnedToday / $todayMax * 100, 2) : 0.0;
 
             $habitsDays = 0;
             $selectedHabit = $b['habit_id'];
-            if ($selectedHabit !== '' && isset($habitById[$selectedHabit])) {
-                $times = max(1, (int)($habitById[$selectedHabit]['timesPerDay'] ?? 1));
+            if ($selectedHabit !== '') {
+                $times = 1;
+                foreach (HabitsBuilder::getAll() as $h) {
+                    if ((string)$h['id'] === $selectedHabit) {
+                        $times = max(1, (int)($h['timesPerDay'] ?? 1));
+                        break;
+                    }
+                }
                 $habitsDays = Storage::getHabitFullDaysCount($uid, $selectedHabit, $times, $userFrom, $userTo);
             }
 
@@ -349,7 +624,6 @@ class StatsBuilder
             ];
         }
 
-        // RANK: efficiency DESC, created_at ASC, steps DESC
         $sorted = $computed;
         uasort($sorted, function ($a, $b) {
             if ($a['eff_all'] != $b['eff_all']) return $b['eff_all'] <=> $a['eff_all'];
@@ -382,114 +656,6 @@ class StatsBuilder
         );
 
         return ['processed' => count($updates), 'elapsed' => $elapsed];
-    }
-
-    // ───────── Максимум за день ─────────
-
-    public static function calculateDailyMax(string $date): int
-    {
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return 0;
-
-        $total = 0;
-
-        foreach (['general_lectures', 'theme_lectures', 'charging'] as $ibKey) {
-            $ibId = Settings::iblockId($ibKey);
-            if ($ibId <= 0) continue;
-            $total += self::sumRewardPointsForDate($ibId, $date);
-        }
-
-        $ibTasks = Settings::iblockId('tasks');
-        if ($ibTasks > 0) $total += self::sumRewardPointsForDate($ibTasks, $date);
-
-        $ibEvents = Settings::iblockId('events');
-        if ($ibEvents > 0) $total += self::sumRewardPointsForDate($ibEvents, $date);
-
-        $habitPoints = 0;
-        foreach (HabitsBuilder::getAll() as $h) {
-            $habitPoints = max($habitPoints, (int)($h['rewardPoints'] ?? 0));
-        }
-        $total += $habitPoints;
-
-        $reflPoints = 0;
-        try {
-            $setting = ReflectionBuilder::getForDate($date);
-            $reflPoints = (int)($setting['rewardPoints'] ?? 0);
-        } catch (\Throwable $e) {}
-        if ($reflPoints <= 0) $reflPoints = Settings::rewardReflectionPoints();
-        $total += $reflPoints;
-
-        $total += Settings::rewardStepsSentPoints();
-        $total += Settings::rewardStepsApprovedPoints();
-
-        return max(0, $total);
-    }
-
-    private static function sumRewardPointsForDate(int $iblockId, string $date): int
-    {
-        if ($iblockId <= 0) return 0;
-
-        $rs = \CIBlockElement::GetList(
-            ['ID' => 'ASC'],
-            [
-                'IBLOCK_ID'         => $iblockId,
-                'ACTIVE'            => 'Y',
-                'CHECK_PERMISSIONS' => 'N',
-                '>=ACTIVE_FROM'     => $date . ' 00:00:00',
-                '<=ACTIVE_FROM'     => $date . ' 23:59:59',
-            ],
-            false,
-            false,
-            ['ID']
-        );
-
-        $total = 0;
-        while ($el = $rs->Fetch()) {
-            $props = \CIBlockElement::GetProperty($iblockId, (int)$el['ID'], [], ['CODE' => 'REWARD_POINTS']);
-            if ($p = $props->Fetch()) {
-                $total += max(0, (int)($p['VALUE'] ?? 0));
-            }
-        }
-        return $total;
-    }
-
-    /**
-     * Заполняет $cache[$date] = MAX_APPLES за каждую дату в диапазоне.
-     * Из HL-кеша, при отсутствии — считает и сохраняет.
-     */
-    private static function fillDailyMaxCache(string $from, string $to, array &$cache): void
-    {
-        $cursor = strtotime($from);
-        $endTs  = strtotime($to);
-        if ($cursor === false || $endTs === false || $endTs < $cursor) return;
-
-        while ($cursor <= $endTs) {
-            $d = date('Y-m-d', $cursor);
-            if (!isset($cache[$d])) {
-                $cached = Storage::getDailyMaxFromCache($d);
-                if ($cached !== null) {
-                    $cache[$d] = $cached;
-                } else {
-                    $cache[$d] = self::calculateDailyMax($d);
-                    Storage::saveDailyMax($d, $cache[$d]);
-                }
-            }
-            $cursor = strtotime('+1 day', $cursor);
-        }
-    }
-
-    private static function sumDailyMax(string $from, string $to, array $cache): int
-    {
-        $sum    = 0;
-        $cursor = strtotime($from);
-        $endTs  = strtotime($to);
-        if ($cursor === false || $endTs === false || $endTs < $cursor) return 0;
-
-        while ($cursor <= $endTs) {
-            $d = date('Y-m-d', $cursor);
-            $sum += $cache[$d] ?? 0;
-            $cursor = strtotime('+1 day', $cursor);
-        }
-        return $sum;
     }
 
     // ───────── Users list (админка) ─────────

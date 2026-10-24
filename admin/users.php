@@ -125,6 +125,23 @@ $withPushRaw = x5pwaFilterValue($arFilter, 'HAS_SUBSCRIPTION');
 $withPush = in_array($withPushRaw, ['Y', 'N'], true) ? $withPushRaw : '';
 
 // ─────────────────────────────────────────────────────────
+// Размер страницы: SIZEN_1 приходит от навигатора CAdminUiList,
+// GetNavSize() возвращает сохранённое в сессии значение.
+// ─────────────────────────────────────────────────────────
+$perPageDefault = 50;
+
+$perPage = (int)($_REQUEST['SIZEN_1'] ?? $_REQUEST['SIZEN'] ?? 0);
+if ($perPage <= 0) {
+    try {
+        $perPage = (int)$lAdmin->GetNavSize();
+    } catch (\Throwable $e) {
+        $perPage = 0;
+    }
+}
+if ($perPage <= 0) $perPage = $perPageDefault;
+if ($perPage > 500) $perPage = 500;
+
+// ─────────────────────────────────────────────────────────
 // Обработка групповых действий
 // ─────────────────────────────────────────────────────────
 if ($arIDs = $lAdmin->GroupAction()) {
@@ -175,7 +192,11 @@ if ($arIDs = $lAdmin->GroupAction()) {
         }
 
         if (!$lAdmin->hasGroupErrors()) {
-            LocalRedirect($APPLICATION->GetCurPage() . '?lang=' . LANGUAGE_ID);
+            LocalRedirect(
+                $APPLICATION->GetCurPage()
+                . '?lang=' . LANGUAGE_ID
+                . '&SIZEN_1=' . $perPage
+            );
         }
     }
 }
@@ -183,8 +204,7 @@ if ($arIDs = $lAdmin->GroupAction()) {
 // ─────────────────────────────────────────────────────────
 // Пагинация и выборка
 // ─────────────────────────────────────────────────────────
-$page    = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
-$perPage = 50;
+$page = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
 
 $params = [
     'search'      => $search,
@@ -564,7 +584,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         }
     }
 
-    LocalRedirect($APPLICATION->GetCurPage() . '?lang=' . LANGUAGE_ID);
+    LocalRedirect(
+        $APPLICATION->GetCurPage()
+        . '?lang=' . LANGUAGE_ID
+        . '&SIZEN_1=' . $perPage
+    );
 }
 
 $lAdmin->DisplayFilter($filterFields);

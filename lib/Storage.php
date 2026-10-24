@@ -220,7 +220,6 @@ class Storage
     {
         $deleted = [];
 
-        // 1. Файлы шагомера
         try {
             $dc = self::dataClass('X5PwaSteps');
             $rows = $dc::getList(['select' => ['UF_IMAGES'], 'filter' => ['=UF_UID' => $uid]])->fetchAll();
@@ -237,7 +236,6 @@ class Storage
             $deleted['X5PwaSteps_files'] = 'ERR: ' . $e->getMessage();
         }
 
-        // 2. Тикеты поддержки + сообщения + файлы
         try {
             $ticketsDc = self::dataClass('X5PwaSupportTickets');
             $tickets = $ticketsDc::getList([
@@ -270,7 +268,6 @@ class Storage
             $deleted['X5PwaSupportMessages'] = 'ERR: ' . $e->getMessage();
         }
 
-        // 3. Остальные таблицы
         $sources = [
             'X5PwaLectureReads'    => 'UF_UID',
             'X5PwaTaskCompletions' => 'UF_UID',
@@ -364,9 +361,7 @@ class Storage
                         $out[$uid] = $ms;
                     }
                 }
-            } catch (\Throwable $e) {
-                // Таблица может отсутствовать при первом хите
-            }
+            } catch (\Throwable $e) {}
         }
 
         return $out;
@@ -403,12 +398,12 @@ class Storage
         if (!empty($params['active_from'])) {
             try {
                 $filter['>=UF_LAST_SEEN_AT'] = new DateTime((string)$params['active_from']);
-            } catch (\Throwable $e) { /* ignore */ }
+            } catch (\Throwable $e) {}
         }
         if (!empty($params['active_to'])) {
             try {
                 $filter['<=UF_LAST_SEEN_AT'] = new DateTime((string)$params['active_to']);
-            } catch (\Throwable $e) { /* ignore */ }
+            } catch (\Throwable $e) {}
         }
 
         if (empty($params['active_from']) && empty($params['active_to']) && !empty($params['activeDays'])) {
@@ -1401,49 +1396,80 @@ class Storage
         ];
     }
 
-    // ───────── DailyMax (кеш максимума яблок на дату) ─────────
+    // ───────── DailyApples (кеш максимума яблок по дате + направлению) ─────────
 
-    public static function getDailyMaxFromCache(string $date): ?int
+    /**
+     * @return array{BASE:int,THEMES:array<string,int>}|null
+     */
+    public static function getDailyApplesFromCache(string $date): ?array
     {
         try {
-            $dc = self::dataClass('X5PwaDailyMax');
-            $row = $dc::getList([
-                'select' => ['UF_MAX_APPLES'],
+            $dc = self::dataClass('X5PwaDailyApples');
+            $rows = $dc::getList([
+                'select' => ['UF_THEME_CODE', 'UF_APPLES'],
                 'filter' => ['=UF_DATE' => $date],
-                'limit'  => 1,
-            ])->fetch();
-            if ($row === false || $row['UF_MAX_APPLES'] === null) return null;
-            return (int)$row['UF_MAX_APPLES'];
+            ])->fetchAll();
+
+            if (!$rows) return null;
+
+            $base   = 0;
+            $themes = [];
+            foreach ($rows as $r) {
+                $code   = (string)($r['UF_THEME_CODE'] ?? '');
+                $apples = (int)($r['UF_APPLES'] ?? 0);
+                if ($code === '') {
+                    $base = $apples;
+                } else {
+                    $themes[$code] = $apples;
+                }
+            }
+
+            return ['BASE' => $base, 'THEMES' => $themes];
         } catch (\Throwable $e) {
             return null;
         }
     }
 
-    public static function saveDailyMax(string $date, int $max): void
+    /**
+     * @param array{BASE:int,THEMES:array<string,int>} $apples
+     */
+    public static function saveDailyApples(string $date, array $apples): void
     {
         try {
-            $dc = self::dataClass('X5PwaDailyMax');
-            $existing = $dc::getList([
-                'select' => ['ID'],
-                'filter' => ['=UF_DATE' => $date],
-                'limit'  => 1,
-            ])->fetch();
-            if ($existing) {
-                $dc::update((int)$existing['ID'], [
-                    'UF_MAX_APPLES'    => $max,
-                    'UF_CALCULATED_AT' => self::now(),
-                ]);
-            } else {
-                $dc::add([
-                    'UF_DATE'          => $date,
-                    'UF_MAX_APPLES'    => $max,
-                    'UF_CALCULATED_AT' => self::now(),
-                ]);
+            $dc  = self::dataClass('X5PwaDailyApples');
+            $now = self::now();
+
+            $saveRow = function (string $code, int $value) use ($dc, $date, $now): void {
+                $existing = $dc::getList([
+                    'select' => ['ID'],
+                    'filter' => ['=UF_DATE' => $date, '=UF_THEME_CODE' => $code],
+                    'limit'  => 1,
+                ])->fetch();
+
+                if ($existing) {
+                    $dc::update((int)$existing['ID'], [
+                        'UF_APPLES'        => $value,
+                        'UF_CALCULATED_AT' => $now,
+                    ]);
+                } else {
+                    $dc::add([
+                        'UF_DATE'          => $date,
+                        'UF_THEME_CODE'    => $code,
+                        'UF_APPLES'        => $value,
+                        'UF_CALCULATED_AT' => $now,
+                    ]);
+                }
+            };
+
+            $saveRow('', (int)($apples['BASE'] ?? 0));
+
+            foreach (($apples['THEMES'] ?? []) as $code => $points) {
+                $saveRow((string)$code, (int)$points);
             }
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile(
-                'saveDailyMax failed date=' . $date . ': ' . $e->getMessage(),
-                'Storage::saveDailyMax',
+                'saveDailyApples failed date=' . $date . ': ' . $e->getMessage(),
+                'Storage::saveDailyApples',
                 '/x5.pwa.log'
             );
         }
@@ -1451,9 +1477,6 @@ class Storage
 
     // ───────── Агрегаты для статистики ─────────
 
-    /**
-     * Сумма начисленных яблок пользователем за период (по RewardLog).
-     */
     public static function getEarnedBetween(string $uid, string $from, string $to): int
     {
         try {
@@ -1476,20 +1499,11 @@ class Storage
         }
     }
 
-    /**
-     * Сумма заработанных яблок пользователем за конкретную локальную дату.
-     */
     public static function getEarnedOnDate(string $uid, string $date): int
     {
         return self::getEarnedBetween($uid, $date, $date);
     }
 
-    /**
-     * Считает число полных дней выполнения выбранной привычки:
-     * дней, где COUNT(записей за локальную дату) >= timesPerDay.
-     *
-     * Опционально ограничивается периодом [$from, $to].
-     */
     public static function getHabitFullDaysCount(
         string $uid,
         string $habitId,
@@ -1533,10 +1547,6 @@ class Storage
         return $count;
     }
 
-    /**
-     * Список UID для пересчёта статистики:
-     * согласие ПД + не заблокирован + активность за последние 24 часа.
-     */
     public static function getActiveUidsForStats(): array
     {
         $conn = Application::getConnection();
@@ -1574,10 +1584,6 @@ class Storage
         }
     }
 
-    /**
-     * Минимальный набор данных пользователя для пересчёта кешей:
-     * UID, workplace, consent, created_at, total_steps, last_activity.
-     */
     public static function getBindingsForStats(array $uids): array
     {
         if (!$uids) return [];
@@ -1586,7 +1592,7 @@ class Storage
             $dc = self::dataClass('X5PwaUidBindings');
             $rows = $dc::getList([
                 'select' => [
-                    'UF_UID', 'UF_WORKPLACE', 'UF_CONSENT_GRANTED',
+                    'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED',
                     'UF_CREATED_AT', 'UF_TOTAL_STEPS', 'UF_LAST_SEEN_AT',
                     'UF_HABIT_ID', 'UF_REWARD_BALANCE', 'UF_BLOCKED',
                 ],
@@ -1598,6 +1604,7 @@ class Storage
                 $out[(string)$r['UF_UID']] = [
                     'uid'             => (string)$r['UF_UID'],
                     'workplace'       => (string)($r['UF_WORKPLACE'] ?? ''),
+                    'theme'           => trim((string)($r['UF_THEME'] ?? '')),
                     'consent'         => ($r['UF_CONSENT_GRANTED'] ?? '') === 'Y',
                     'created_at'      => $r['UF_CREATED_AT'] ?? null,
                     'created_ts'      => $r['UF_CREATED_AT'] ? $r['UF_CREATED_AT']->getTimestamp() : 0,
@@ -1614,11 +1621,6 @@ class Storage
         }
     }
 
-    /**
-     * Массовое обновление кешей статистики.
-     *
-     * @param array $rows [uid => ['rank' => int, 'eff_all' => float, 'eff_day' => float, 'habits_days' => int]]
-     */
     public static function bulkUpdateStatsCache(array $rows): void
     {
         if (!$rows) return;
@@ -1663,16 +1665,14 @@ class Storage
             }
         }
     }
-    /**
-     * Расширенный набор полей UID для /stats/personal.
-     */
+
     public static function getBindingForPersonal(string $uid): ?array
     {
         try {
             $dc = self::dataClass('X5PwaUidBindings');
             $row = $dc::getList([
                 'select' => [
-                    'UF_UID', 'UF_WORKPLACE', 'UF_CONSENT_GRANTED', 'UF_BLOCKED',
+                    'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED', 'UF_BLOCKED',
                     'UF_TOTAL_STEPS', 'UF_REWARD_BALANCE',
                     'UF_RANK', 'UF_EFFICIENCY_ALL', 'UF_EFFICIENCY_DAY', 'UF_HABITS_DAYS',
                 ],
@@ -1684,6 +1684,7 @@ class Storage
             return [
                 'uid'             => (string)$row['UF_UID'],
                 'workplace'       => (string)($row['UF_WORKPLACE'] ?? ''),
+                'theme'           => trim((string)($row['UF_THEME'] ?? '')),
                 'consent'         => ($row['UF_CONSENT_GRANTED'] ?? '') === 'Y',
                 'blocked'         => ($row['UF_BLOCKED'] ?? 'N') === 'Y',
                 'total_steps'     => (int)($row['UF_TOTAL_STEPS'] ?? 0),
@@ -1697,9 +1698,7 @@ class Storage
             return null;
         }
     }
-    /**
-     * Сумма балансов по компании (workplace).
-     */
+
     public static function getCompanyTotalApples(string $workplace): int
     {
         try {
@@ -1719,5 +1718,4 @@ class Storage
             return 0;
         }
     }
-    
 }

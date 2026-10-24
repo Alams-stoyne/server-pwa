@@ -18,6 +18,26 @@ $isPost  = $request->isPost() && check_bitrix_sessid();
 $message = null;
 $error   = null;
 
+// ── Период статистики — читаем ДО сохранения, валидируем отдельно ──
+$periodStartRaw = trim((string)$request->getPost('stats_period_start'));
+$periodEndRaw   = trim((string)$request->getPost('stats_period_end'));
+$periodOk       = true;
+
+if ($isPost) {
+    if ($periodStartRaw !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodStartRaw)) {
+        $error = 'Период статистики: дата старта должна быть в формате YYYY-MM-DD.';
+        $periodOk = false;
+    }
+    if ($periodEndRaw !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $periodEndRaw)) {
+        $error = 'Период статистики: дата конца должна быть в формате YYYY-MM-DD.';
+        $periodOk = false;
+    }
+    if ($periodOk && $periodStartRaw !== '' && $periodEndRaw !== '' && $periodStartRaw > $periodEndRaw) {
+        $error = 'Период статистики: дата старта не может быть позже даты конца.';
+        $periodOk = false;
+    }
+}
+
 $saveFormFields = function () use ($request, $module_id): void {
     $fields = [
         'vapid_public', 'vapid_private', 'vapid_subject',
@@ -25,6 +45,10 @@ $saveFormFields = function () use ($request, $module_id): void {
         's3_access_key', 's3_prefix', 's3_path_style',
         'cdn_base', 'cdn_strip_bucket', 'cdn_strip_upload',
         'allowed_origins',
+        // Дефолты наград (если не заданы в ИБ)
+        'reward_steps_sent_points',
+        'reward_steps_approved_points',
+        'reward_reflection_points',
     ];
     foreach ($fields as $f) {
         Option::set($module_id, $f, (string)$request->getPost($f));
@@ -35,9 +59,22 @@ $saveFormFields = function () use ($request, $module_id): void {
         Option::set($module_id, 's3_secret_key', $secret);
     }
 
+    // Интервал обновления stats/global.json на CDN (сек)
     $iv = (int)$request->getPost('stats_interval_sec');
     if ($iv < 60) $iv = 600;
     Option::set($module_id, 'stats_interval_sec', (string)$iv);
+
+    // Интервал пересчёта кешей RANK/EFFICIENCY/HABITS_DAYS (сек)
+    $recalcIv = (int)$request->getPost('stats_recalc_interval_sec');
+    if ($recalcIv < 60) $recalcIv = 3600;
+    Option::set($module_id, 'stats_recalc_interval_sec', (string)$recalcIv);
+
+    // Нормализация наград: целое ≥ 0
+    foreach (['reward_steps_sent_points', 'reward_steps_approved_points', 'reward_reflection_points'] as $k) {
+        $v = (int)$request->getPost($k);
+        if ($v < 0) $v = 0;
+        Option::set($module_id, $k, (string)$v);
+    }
 };
 
 $validateVapid = function (string $pub, string $priv): ?string {
@@ -62,6 +99,12 @@ if ($isPost && $request->getPost('restore') !== null) {
 }
 
 if ($isPost) $saveFormFields();
+
+// Период сохраняем отдельно — только если валиден
+if ($isPost && $periodOk) {
+    Option::set($module_id, 'stats_period_start', $periodStartRaw);
+    Option::set($module_id, 'stats_period_end',   $periodEndRaw);
+}
 
 if ($isPost && $request->getPost('regenerate_vapid') !== null) {
     try {
@@ -135,6 +178,20 @@ if ($isPost && $request->getPost('rebuild_stats') !== null) {
     }
 }
 
+// ─── Пересчитать кеши RANK / EFFICIENCY / HABITS_DAYS ───
+if ($isPost && $request->getPost('recalc_caches') !== null) {
+    try {
+        $r = \X5\Pwa\StatsBuilder::recalcAllStats();
+        $message = sprintf(
+            'Кеши пересчитаны: обработано %d пользователей за %ss.',
+            (int)($r['processed'] ?? 0),
+            (string)($r['elapsed'] ?? '?')
+        );
+    } catch (\Throwable $e) {
+        $error = 'Ошибка пересчёта: ' . $e->getMessage();
+    }
+}
+
 if ($isPost && $request->getPost('resetup_iblock') !== null) {
     try {
         \X5\Pwa\IblockSetup::install();
@@ -171,7 +228,7 @@ if ($isPost && $request->getPost('resetup_admin') !== null) {
     }
 }
 
-if ($isPost && $request->getPost('save') !== null) {
+if ($isPost && $request->getPost('save') !== null && $error === null) {
     $pub  = (string)$request->getPost('vapid_public');
     $priv = (string)$request->getPost('vapid_private');
     $vErr = $validateVapid($pub, $priv);
@@ -201,6 +258,8 @@ $ibKeys = [
     'today_widgets'    => 'Виджеты Today',
     'tutorial'         => 'Слайды обучения',
     'reflections'      => 'Настройки рефлексии',
+    'events'           => 'События дня',
+    'workplaces'       => 'Компании',
 ];
 
 $ibCfg  = \X5\Pwa\IblockSetup::config();
@@ -240,11 +299,24 @@ $statsWaitSec    = $lastStatsAt > 0
 $lastDumpAt      = (int)Option::get($module_id, 'last_dump_at', 0);
 $lastDumpAtText  = $lastDumpAt > 0 ? date('d.m.Y H:i:s', (int)($lastDumpAt / 1000)) : '—';
 
+// ── Период и пересчёт кешей ──
+$statsPeriodStart = $opt('stats_period_start');
+$statsPeriodEnd   = $opt('stats_period_end');
+$recalcInterval   = (int)Option::get($module_id, 'stats_recalc_interval_sec', 3600);
+if ($recalcInterval < 60) $recalcInterval = 3600;
+$recalcLastAt     = (int)Option::get($module_id, 'stats_recalc_last_at', 0);
+$recalcLastText   = $recalcLastAt > 0 ? date('d.m.Y H:i:s', $recalcLastAt) : '—';
+
+// ── Дефолты наград ──
+$rewardStepsSent     = (int)Option::get($module_id, 'reward_steps_sent_points', 0);
+$rewardStepsApproved = (int)Option::get($module_id, 'reward_steps_approved_points', 5);
+$rewardReflection    = (int)Option::get($module_id, 'reward_reflection_points', 2);
+
 $aTabs = [
     ['DIV' => 'edit_vapid',  'TAB' => 'VAPID',      'TITLE' => 'VAPID ключи'],
     ['DIV' => 'edit_s3',     'TAB' => 'S3',         'TITLE' => $s3Title],
     ['DIV' => 'edit_iblock', 'TAB' => 'Инфоблоки',  'TITLE' => 'Инфоблоки и дампы'],
-    ['DIV' => 'edit_stats',  'TAB' => 'Статистика', 'TITLE' => 'Статистика и cron'],
+    ['DIV' => 'edit_stats',  'TAB' => 'Статистика', 'TITLE' => 'Статистика, период, награды'],
     ['DIV' => 'edit_cors',   'TAB' => 'CORS',       'TITLE' => 'Разрешённые источники'],
     ['DIV' => 'edit_tools',  'TAB' => 'Сервис',     'TITLE' => 'Сервисные операции'],
 ];
@@ -450,27 +522,75 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
     <tr>
         <td colspan="2">
             <p><b>Пересобрать дампы.</b> Заливает в S3 лекции, задания,
-                конфигурацию и статистику.</p>
+                конфигурацию, компании, период и статистику.</p>
             <input type="submit" name="rebuild_dumps" value="Пересобрать дампы"
                    class="adm-btn" onclick="return confirm('Пересобрать все дампы в S3?')">
         </td>
     </tr>
 
     <?php $tabControl->BeginNextTab(); ?>
+
+    <tr class="heading">
+        <td colspan="2">Период статистики</td>
+    </tr>
     <tr>
-        <td width="40%"><label>Интервал обновления статистики (сек):</label></td>
+        <td width="40%"><label>Дата старта:</label></td>
         <td width="60%">
+            <input type="date" name="stats_period_start"
+                   value="<?= htmlspecialcharsbx($statsPeriodStart) ?>"
+                   style="padding:6px 8px;font-size:13px;border:1px solid #c5c9cf;border-radius:3px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Пусто — авто: от минимальной даты регистрации (не раньше чем за 365 дней).
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Дата завершения:</label></td>
+        <td>
+            <input type="date" name="stats_period_end"
+                   value="<?= htmlspecialcharsbx($statsPeriodEnd) ?>"
+                   style="padding:6px 8px;font-size:13px;border:1px solid #c5c9cf;border-radius:3px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Пусто — авто: сегодня. После этой даты активности не учитываются в расчётах.
+                После сохранения обновите <code>stats/global.json</code> (кнопка «Обновить статистику»).
+            </div>
+        </td>
+    </tr>
+
+    <tr class="heading">
+        <td colspan="2">Интервалы</td>
+    </tr>
+    <tr>
+        <td><label>Интервал обновления stats/global.json (сек):</label></td>
+        <td>
             <input type="number" name="stats_interval_sec" min="60" step="60"
                    value="<?= (int)$statsInterval ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Раз в этот интервал Scheduler пересобирает <code>stats/global.json</code>
+                на CDN. Мин. 60, дефолт 600.
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Интервал пересчёта кешей RANK/EFFICIENCY (сек):</label></td>
+        <td>
+            <input type="number" name="stats_recalc_interval_sec" min="60" step="60"
+                   value="<?= (int)$recalcInterval ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Раз в этот интервал Scheduler пересчитывает <code>UF_RANK</code>,
+                <code>UF_EFFICIENCY_ALL/DAY</code>, <code>UF_HABITS_DAYS</code>.
+                Мин. 60, дефолт 3600.
+            </div>
         </td>
     </tr>
     <tr>
         <td><label>Состояние:</label></td>
         <td>
-            Последнее обновление: <b><?= htmlspecialcharsbx($lastStatsAtText) ?></b><br>
+            Последнее обновление CDN-статистики: <b><?= htmlspecialcharsbx($lastStatsAtText) ?></b><br>
             Ближайшее: <b><?= $statsDue
                 ? 'сейчас (по запросу)'
-                : 'через ' . (int)$statsWaitSec . ' сек' ?></b>
+                : 'через ' . (int)$statsWaitSec . ' сек' ?></b><br>
+            Последний пересчёт кешей: <b><?= htmlspecialcharsbx($recalcLastText) ?></b>
         </td>
     </tr>
     <tr>
@@ -490,8 +610,50 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
     </tr>
     <tr>
         <td colspan="2">
-            <p><b>Обновить статистику сейчас.</b></p>
+            <p><b>Обновить stats/global.json сейчас.</b></p>
             <input type="submit" name="rebuild_stats" value="Обновить статистику" class="adm-btn">
+            &nbsp;
+            <input type="submit" name="recalc_caches" value="Пересчитать кеши (RANK/EFFICIENCY)"
+                   class="adm-btn"
+                   onclick="return confirm('Пересчитать RANK / EFFICIENCY / HABITS_DAYS по всем активным пользователям?\n\nЭто может занять время.')">
+        </td>
+    </tr>
+
+    <tr class="heading">
+        <td colspan="2">Дефолты наград</td>
+    </tr>
+    <tr>
+        <td><label>Шаги — за отправку (яблок):</label></td>
+        <td>
+            <input type="number" name="reward_steps_sent_points" min="0" step="1"
+                   value="<?= (int)$rewardStepsSent ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Начисляется сразу при <code>POST /steps/send</code>. По текущей бизнес-логике
+                — <b>0</b> (основная награда идёт после approve). Изменение вступит в силу
+                со следующей отправки.
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Шаги — после approve (яблок):</label></td>
+        <td>
+            <input type="number" name="reward_steps_approved_points" min="0" step="1"
+                   value="<?= (int)$rewardStepsApproved ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Начисляется модератору при выставлении статуса <code>Y</code>.
+                Дефолт — <b>5</b>. Не зависит от количества шагов.
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Рефлексия — за отправку (яблок):</label></td>
+        <td>
+            <input type="number" name="reward_reflection_points" min="0" step="1"
+                   value="<?= (int)$rewardReflection ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Fallback, если у элемента ИБ «Настройки рефлексии» не задано свойство
+                <code>REWARD_POINTS</code>. Дефолт — <b>2</b>.
+            </div>
         </td>
     </tr>
 

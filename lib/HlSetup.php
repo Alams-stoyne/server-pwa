@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 15;
+        return 16;
     }
 
     public static function config(): array
@@ -40,9 +40,7 @@ class HlSetup
                     'UF_CONSENT_LOCAL_DT'  => ['string', ['SIZE' => 32]],
                     'UF_HABIT_ID'          => ['string', ['SIZE' => 32]],
                     'UF_HABIT_SELECTED_AT' => ['datetime', []],
-                    // Кеш баланса наград
                     'UF_REWARD_BALANCE'    => ['integer', []],
-                    // Кеш рейтинга и эффективности (пересчитывается Scheduler'ом)
                     'UF_RANK'              => ['integer', []],
                     'UF_EFFICIENCY_ALL'    => ['double', []],
                     'UF_EFFICIENCY_DAY'    => ['double', []],
@@ -244,13 +242,16 @@ class HlSetup
                     'UF_CREATED_AT'  => ['datetime', []],
                 ],
             ],
-            // Кеш максимума яблок по дате — чтобы не считать на каждый запрос
-            'DailyMax' => [
-                'name'  => 'X5PwaDailyMax',
-                'table' => 'x5_pwa_daily_max',
+            // Кеш максимума яблок по датам в разрезе направлений.
+            // BASE — общие для всех (charging + general_lectures + events + reflection + steps),
+            // THEMES — по каждому направлению (theme_lectures + tasks).
+            'DailyApples' => [
+                'name'  => 'X5PwaDailyApples',
+                'table' => 'x5_pwa_daily_apples',
                 'fields' => [
                     'UF_DATE'          => ['string', ['SIZE' => 10]],
-                    'UF_MAX_APPLES'    => ['integer', []],
+                    'UF_THEME_CODE'    => ['string', ['SIZE' => 32]],
+                    'UF_APPLES'        => ['integer', []],
                     'UF_CALCULATED_AT' => ['datetime', []],
                 ],
             ],
@@ -268,6 +269,7 @@ class HlSetup
         }
         self::ensureColumnTypes();
         self::ensureIndexes();
+        self::dropLegacyDailyMax();
     }
 
     public static function uninstall(): void
@@ -286,16 +288,50 @@ class HlSetup
             while ($f = $fields->Fetch()) {
                 try {
                     $uf->Delete($f['ID']);
-                } catch (\Throwable $e) {
-                    // Игнорируем — HL-обработчик может упасть, если таблицы нет
-                }
+                } catch (\Throwable $e) {}
             }
 
             try {
                 HighloadBlockTable::delete($hl['ID']);
-            } catch (\Throwable $e) {
-                // Игнорируем
+            } catch (\Throwable $e) {}
+        }
+    }
+
+    /**
+     * Удаляет устаревший HL X5PwaDailyMax (v14–v15).
+     * В v16 вместо него — X5PwaDailyApples с разбивкой по направлениям.
+     */
+    private static function dropLegacyDailyMax(): void
+    {
+        try {
+            $hl = HighloadBlockTable::getList([
+                'filter' => ['=NAME' => 'X5PwaDailyMax'],
+                'limit'  => 1,
+            ])->fetch();
+            if (!$hl) return;
+
+            $hlId     = (int)$hl['ID'];
+            $entityId = 'HLBLOCK_' . $hlId;
+
+            $uf = new \CUserTypeEntity();
+            $fields = \CUserTypeEntity::GetList([], ['ENTITY_ID' => $entityId]);
+            while ($f = $fields->Fetch()) {
+                try { $uf->Delete($f['ID']); } catch (\Throwable $e) {}
             }
+
+            HighloadBlockTable::delete($hlId);
+
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'Dropped legacy X5PwaDailyMax (ID=' . $hlId . ')',
+                'HlSetup::dropLegacyDailyMax',
+                '/x5.pwa.log'
+            );
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'dropLegacyDailyMax failed: ' . $e->getMessage(),
+                'HlSetup::dropLegacyDailyMax',
+                '/x5.pwa.log'
+            );
         }
     }
 
@@ -403,7 +439,6 @@ class HlSetup
                 'idx_x5pwa_events_uid_confirmed' => 'UF_UID, UF_CONFIRMED_AT',
             ],
             'x5_pwa_reward_log' => [
-                // Уникальный — гарантирует отсутствие двойного начисления
                 'uniq_x5pwa_reward_key'    => 'unique:UF_UNIQUE_KEY',
                 'idx_x5pwa_reward_uid'     => 'UF_UID',
                 'idx_x5pwa_reward_uid_at'  => 'UF_UID, UF_CREATED_AT',
@@ -411,8 +446,10 @@ class HlSetup
                 'idx_x5pwa_reward_uid_d'   => 'UF_UID, UF_LOCAL_DATE',
                 'idx_x5pwa_reward_date'    => 'UF_LOCAL_DATE',
             ],
-            'x5_pwa_daily_max' => [
-                'uniq_x5pwa_dailymax_date' => 'unique:UF_DATE',
+            'x5_pwa_daily_apples' => [
+                // Уникальная пара (дата, направление) — гарантирует одну строку на корзину
+                'uniq_x5pwa_dailyapples_dt' => 'unique:UF_DATE, UF_THEME_CODE',
+                'idx_x5pwa_dailyapples_date' => 'UF_DATE',
             ],
         ];
 

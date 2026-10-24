@@ -31,16 +31,11 @@ return [
                 'more_url' => ['x5_pwa_steps_leaderboard.php'],
                 'icon'     => 'update_menu_icon',
             ],
-
-            // ── Альтернатива: отдельный подпункт рядом с «Шагомер».
-            //    Если хотите видеть «ТОП» отдельной строкой — раскомментируйте:
-            
             [
                 'text' => 'ТОП шагомера',
                 'url'  => 'x5_pwa_steps_leaderboard.php?lang=' . LANGUAGE_ID,
                 'icon' => 'statistic_menu_icon',
             ],
-
             [
                 'text'     => 'Техподдержка',
                 'url'      => 'x5_pwa_support.php?lang=' . LANGUAGE_ID,
@@ -55,6 +50,11 @@ return [
             [
                 'text' => 'Общая статистика',
                 'url'  => 'x5_pwa_stats.php?lang=' . LANGUAGE_ID,
+                'icon' => 'statistic_menu_icon',
+            ],
+            [
+                'text' => 'Максимум яблок по дням',
+                'url'  => 'x5_pwa_daily_apples.php?lang=' . LANGUAGE_ID,
                 'icon' => 'statistic_menu_icon',
             ],
             [
