@@ -1,6 +1,8 @@
 <?php
 namespace X5\Pwa\Api;
 
+use X5\Pwa\Settings;
+use X5\Pwa\StatsBuilder;
 use X5\Pwa\StepsBuilder;
 use X5\Pwa\Storage;
 
@@ -12,8 +14,6 @@ class Steps
      *
      * Ответ (RESULT=OK):
      *   { RESULT, SERVER_DATETIME, REWARD_POINTS }
-     * REWARD_POINTS — сколько яблок начислено за эту отправку (обычно 0,
-     *   т.к. начисление идёт после approve модератором).
      */
     public static function send(array $b): array
     {
@@ -50,7 +50,21 @@ class Steps
 
     /**
      * POST /steps/summary
-     * Body: { ID_USER }
+     * Body: { ID_USER, TZ_OFFSET_MIN?, LOCAL_DATETIME? }
+     *
+     * Ответ:
+     *   {
+     *     RESULT,
+     *     TOTAL_STEPS, GOAL, RANK, TOTAL_USERS,
+     *     TODAY_STEPS, DAILY_AVG, TOP_PERCENT,
+     *     PROGRESS_PERCENT,           ← % к цели (fallback)
+     *     CONFIRMED_DATES: [YYYY-MM-DD, ...],
+     *     CONFIRMED_DAYS_COUNT: int,
+     *     PERIOD: {
+     *        FROM, TO,                 ← эффективный период (START..END)
+     *        PLANNED_FROM, PLANNED_TO  ← запланированный (сырые настройки модуля)
+     *     }
+     *   }
      */
     public static function summary(array $b): array
     {
@@ -65,6 +79,22 @@ class Steps
         }
 
         $summary = StepsBuilder::getSummary($uid);
+
+        [$periodFrom, $periodTo] = StatsBuilder::getEffectivePeriod();
+
+        $plannedStart = Settings::statsPeriodStart();
+        $plannedEnd   = Settings::statsPeriodEnd();
+
+        $confirmedDates = StepsBuilder::getConfirmedDates($uid, $periodFrom, $periodTo);
+
+        $summary['CONFIRMED_DATES']      = $confirmedDates;
+        $summary['CONFIRMED_DAYS_COUNT'] = count($confirmedDates);
+        $summary['PERIOD'] = [
+            'FROM'         => $periodFrom,
+            'TO'           => $periodTo,
+            'PLANNED_FROM' => $plannedStart !== '' ? $plannedStart : $periodFrom,
+            'PLANNED_TO'   => $plannedEnd   !== '' ? $plannedEnd   : $periodTo,
+        ];
 
         return array_merge(['RESULT' => 'OK'], $summary);
     }

@@ -12,11 +12,7 @@ class ContentBuilder
     private static function log(string $msg, string $label = 'ContentBuilder debug'): void
     {
         if (!self::DEBUG_PROPS) return;
-        \Bitrix\Main\Diag\Debug::writeToFile(
-            '[' . date('H:i:s') . '] ' . $msg,
-            $label,
-            '/x5.pwa.log'
-        );
+        Settings::log('[' . date('H:i:s') . '] ' . $msg, $label);
     }
 
     private static function loadProps(int $iblockId, int $elementId): array
@@ -82,10 +78,6 @@ class ContentBuilder
         return ThemesResolver::resolve($raw);
     }
 
-    /**
-     * Достаёт REWARD_POINTS из свойств. Поддерживает int или строку.
-     * Отрицательные значения считаются нулём.
-     */
     private static function extractRewardPoints(array $props): int
     {
         if (empty($props['REWARD_POINTS'])) return 0;
@@ -128,7 +120,13 @@ class ContentBuilder
             $elementId = (int)$fields['ID'];
             $props = self::loadProps($iblockId, $elementId);
 
-            $extId = $fields['XML_ID'] ?: ($fields['CODE'] ?: (string)$fields['ID']);
+            // ← ИЗМЕНЕНО: приоритет CODE → XML_ID → ID.
+            // Уникальность CODE гарантируется настройкой ИБ
+            // («Проверять уникальность символьного кода»).
+            // Это соответствует остальным builder'ам модуля
+            // (ThemesResolver, HabitsBuilder, WorkplacesBuilder, EventsBuilder,
+            //  QuizBuilder, TutorialBuilder) — там уже CODE-first.
+            $extId = $fields['CODE'] ?: ($fields['XML_ID'] ?: (string)$elementId);
 
             $photos       = self::extractPhotos($props);
             $videoLink    = self::extractVideoLink($props);
@@ -273,17 +271,9 @@ class ContentBuilder
         ], $items);
     }
 
-    /**
-     * Практики (задания) — расширенный формат, как у лекций.
-     *
-     * @return array<int, array{
-     *   ID_TASK:string, TITLE:string, DESCRIPTION:string, TEXT:string,
-     *   COVER:?string, VIDEO_LINK:?string, THEME:string, REWARD_POINTS:int
-     * }>
-     */
     public static function themeTasks(string $theme, ?string $date = null): array
     {
-        $id    = Settings::iblockId('tasks'); 
+        $id    = Settings::iblockId('tasks');
         $items = self::query($id);
         $items = array_values(array_filter($items, fn($i) => $i['THEME'] === $theme));
         $items = self::filterByDate($items, $date);

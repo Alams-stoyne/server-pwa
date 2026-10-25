@@ -296,7 +296,6 @@ class Storage
             }
         }
 
-        // Удаление — критическое действие (аудит), пишем всегда.
         Settings::logError(
             'delete uid=' . substr($uid, 0, 12) . '… deleted='
                 . json_encode($deleted, JSON_UNESCAPED_UNICODE),
@@ -1092,7 +1091,6 @@ class Storage
     public static function setRateBucket(string $key, array $timestamps): void
     {
         $dc = self::dataClass('X5PwaRateLimits');
-        // ← ИСПРАВЛЕНО: было $dc->getList(...) — фатал, должно быть $dc::getList(...)
         $row = $dc::getList(['filter' => ['=UF_KEY' => $key], 'limit' => 1])->fetch();
         $value = json_encode(array_values($timestamps));
         if ($row) $dc::update($row['ID'], ['UF_TIMESTAMPS' => $value]);
@@ -1681,6 +1679,15 @@ class Storage
         return $count;
     }
 
+    /**
+     * Активные пользователи для статистики.
+     *
+     * Фильтры:
+     *   • согласие на ПД (UF_CONSENT_GRANTED = 'Y');
+     *   • не заблокирован;
+     *   • выбрана тема (UF_THEME != '') — иначе не учитываем в статистике (БМ);
+     *   • была активность за последние сутки.
+     */
     public static function getActiveUidsForStats(): array
     {
         $conn = Application::getConnection();
@@ -1694,6 +1701,7 @@ class Storage
             FROM x5_pwa_uid_bindings u
             WHERE u.UF_CONSENT_GRANTED = 'Y'
               AND (u.UF_BLOCKED IS NULL OR u.UF_BLOCKED = 'N')
+              AND (u.UF_THEME IS NOT NULL AND u.UF_THEME != '')
               AND (
                     u.UF_LAST_SEEN_AT > '{$cutoffSafe}'
                  OR EXISTS (SELECT 1 FROM x5_pwa_reward_log r

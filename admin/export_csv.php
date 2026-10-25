@@ -1,6 +1,11 @@
 <?php
 /**
  * Экспорт пользователей PWA в CSV (с учётом блокировки).
+ *
+ * Колонки:
+ *   — «За период» (stats_period_start..stats_period_end) — активности + эффективность;
+ *   — «За сегодня» — собрано/возможно/недостаёт/эффективность;
+ *   — «За всё время» — total-активности + баланс.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -40,6 +45,9 @@ $params = [
     'perPage'     => 500,
 ];
 
+// Период — для подписи и, если понадобится, для агрегата
+[$periodFrom, $periodTo] = \X5\Pwa\StatsBuilder::getEffectivePeriod();
+
 $filename = 'x5_pwa_users_' . date('Y-m-d_H-i') . '.csv';
 
 header('Content-Type: text/csv; charset=utf-8');
@@ -53,13 +61,44 @@ fwrite($out, "\xEF\xBB\xBF");
 fputcsv($out, [
     'UID', 'Статус', 'Ф.И.О', 'Никнейм', 'Место работы', 'Направление',
     'Device ID', 'Создан', 'Последняя активность', 'Push-подписка',
-    'Лекций', 'Заданий', 'Привычек',
+    // За период
+    'Лекций (период)', 'Заданий (период)', 'Привычек (период)',
+    'Шагов (период)', 'Событий посещено (период)', 'Событий подтверждено (период)',
+    'Собрано (период)', 'Возможно (период)', 'Недостаёт (период)', 'Эффективность % (период)',
+    // За сегодня
+    'Собрано (сегодня)', 'Возможно (сегодня)', 'Недостаёт (сегодня)', 'Эффективность % (сегодня)',
+    // За всё время
+    'Лекций (всего)', 'Заданий (всего)', 'Привычек (всего)', 'Баланс (всего)',
+    // Блокировка
     'Заблокирован с', 'Причина блокировки',
 ]);
 
 $fmt = fn(?int $ms): string => $ms ? date('Y-m-d H:i:s', (int)($ms / 1000)) : '';
 
-$writeRow = function ($u) use ($out, $fmt) {
+/**
+ * @param array $u — нормализованная строка пользователя с полями:
+ *   UID, BLOCKED, FIO, NICKNAME, WORKPLACE, THEME, DEVICE_ID,
+ *   CREATED_AT, LAST_ACTIVITY_AT, HAS_SUBSCRIPTION, BLOCKED_AT, BLOCK_REASON,
+ *   --- period ---
+ *   LECTURES_READ, TASKS_DONE, HABITS_DONE, STEPS_CONFIRMED,
+ *   EVENTS_VISITED, EVENTS_CONFIRMED,
+ *   EARNED_ALL, MAX_ALL, MISSING_ALL, EFFICIENCY_ALL,
+ *   --- day ---
+ *   EARNED_DAY, MAX_DAY, EFFICIENCY_DAY,
+ *   --- total ---
+ *   LECTURES_READ_TOTAL, TASKS_DONE_TOTAL, HABITS_DONE_TOTAL, REWARD_BALANCE
+ */
+$writeRow = function (array $u) use ($out, $fmt): void {
+    $earnedAll  = (int)($u['EARNED_ALL']  ?? 0);
+    $maxAll     = (int)($u['MAX_ALL']     ?? 0);
+    $missingAll = (int)($u['MISSING_ALL'] ?? max(0, $maxAll - $earnedAll));
+    $effAll     = (float)($u['EFFICIENCY_ALL'] ?? 0);
+
+    $earnedDay  = (int)($u['EARNED_DAY'] ?? 0);
+    $maxDay     = (int)($u['MAX_DAY']    ?? 0);
+    $missingDay = max(0, $maxDay - $earnedDay);
+    $effDay     = (float)($u['EFFICIENCY_DAY'] ?? 0);
+
     fputcsv($out, [
         $u['UID'],
         !empty($u['BLOCKED']) ? 'Заблокирован' : 'Активен',
@@ -68,31 +107,61 @@ $writeRow = function ($u) use ($out, $fmt) {
         $u['WORKPLACE'],
         $u['THEME'],
         $u['DEVICE_ID'],
-        $fmt($u['CREATED_AT']),
-        $fmt($u['LAST_ACTIVITY_AT']),
-        $u['HAS_SUBSCRIPTION'] ? 'да' : 'нет',
-        (int)$u['LECTURES_READ'],
-        (int)$u['TASKS_DONE'],
-        (int)$u['HABITS_DONE'],
-        $fmt($u['BLOCKED_AT'] ?? 0),
-        $u['BLOCK_REASON'] ?? '',
+        $fmt((int)($u['CREATED_AT']       ?? 0)),
+        $fmt((int)($u['LAST_ACTIVITY_AT'] ?? 0)),
+        !empty($u['HAS_SUBSCRIPTION']) ? 'да' : 'нет',
+
+        // За период
+        (int)($u['LECTURES_READ']    ?? 0),
+        (int)($u['TASKS_DONE']       ?? 0),
+        (int)($u['HABITS_DONE']      ?? 0),
+        (int)($u['STEPS_CONFIRMED']  ?? 0),
+        (int)($u['EVENTS_VISITED']   ?? 0),
+        (int)($u['EVENTS_CONFIRMED'] ?? 0),
+        $earnedAll,
+        $maxAll,
+        $missingAll,
+        number_format($effAll, 2, '.', ''),
+
+        // За сегодня
+        $earnedDay,
+        $maxDay,
+        $missingDay,
+        number_format($effDay, 2, '.', ''),
+
+        // За всё время
+        (int)($u['LECTURES_READ_TOTAL'] ?? 0),
+        (int)($u['TASKS_DONE_TOTAL']    ?? 0),
+        (int)($u['HABITS_DONE_TOTAL']   ?? 0),
+        (int)($u['REWARD_BALANCE']      ?? 0),
+
+        // Блокировка
+        $fmt((int)($u['BLOCKED_AT']   ?? 0)),
+        (string)($u['BLOCK_REASON']   ?? ''),
     ]);
 };
 
-// Режим: выбранные UID
+// ── Режим: выбранные UID ──
 if ($uids) {
+    $periodStats = \X5\Pwa\Storage::getPeriodStatsForUids($uids, $periodFrom, $periodTo);
+    $totalStats  = \X5\Pwa\Storage::getStatsForUids($uids);
+    $subs        = \X5\Pwa\Storage::getSubscriptionsForUids($uids);
+    $activity    = \X5\Pwa\Storage::getLastActivityForUids($uids);
+
     foreach ($uids as $uid) {
         $binding = \X5\Pwa\Storage::getUidBinding($uid);
         if (!$binding) continue;
 
-        $stats  = \X5\Pwa\Storage::getStatsForUids([$uid]);
-        $subs   = \X5\Pwa\Storage::getSubscriptionsForUids([$uid]);
-        $active = \X5\Pwa\Storage::getLastActivityForUids([$uid]);
+        $personal = \X5\Pwa\Storage::getBindingForPersonal($uid);
+        $ps = $periodStats[$uid] ?? [
+            'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+            'events_visited' => 0, 'events_confirmed' => 0,
+        ];
+        $ts = $totalStats[$uid] ?? ['lectures' => 0, 'tasks' => 0, 'habits' => 0];
 
-        $s = $stats[$uid] ?? ['lectures' => 0, 'tasks' => 0, 'habits' => 0];
         $lastSeen = $binding['UF_LAST_SEEN_AT']
             ? $binding['UF_LAST_SEEN_AT']->getTimestamp() * 1000 : 0;
-        $lastActive = max($lastSeen, $active[$uid] ?? 0);
+        $lastActive = max($lastSeen, $activity[$uid] ?? 0);
 
         $writeRow([
             'UID'              => $uid,
@@ -105,13 +174,33 @@ if ($uids) {
                 ? $binding['UF_CREATED_AT']->getTimestamp() * 1000 : 0,
             'LAST_ACTIVITY_AT' => $lastActive,
             'HAS_SUBSCRIPTION' => !empty($subs[$uid]),
-            'LECTURES_READ'    => $s['lectures'],
-            'TASKS_DONE'       => $s['tasks'],
-            'HABITS_DONE'      => $s['habits'],
             'BLOCKED'          => ($binding['UF_BLOCKED'] ?? 'N') === 'Y',
             'BLOCKED_AT'       => !empty($binding['UF_BLOCKED_AT'])
                 ? $binding['UF_BLOCKED_AT']->getTimestamp() * 1000 : 0,
             'BLOCK_REASON'     => (string)($binding['UF_BLOCK_REASON'] ?? ''),
+
+            // За период
+            'LECTURES_READ'    => (int)$ps['lectures'],
+            'TASKS_DONE'       => (int)$ps['tasks'],
+            'HABITS_DONE'      => (int)$ps['habits'],
+            'STEPS_CONFIRMED'  => (int)$ps['steps'],
+            'EVENTS_VISITED'   => (int)$ps['events_visited'],
+            'EVENTS_CONFIRMED' => (int)$ps['events_confirmed'],
+            'EARNED_ALL'       => (int)($personal['earned_all']  ?? 0),
+            'MAX_ALL'          => (int)($personal['max_all']     ?? 0),
+            'MISSING_ALL'      => (int)($personal['missing_all'] ?? 0),
+            'EFFICIENCY_ALL'   => (float)($personal['eff_all']   ?? 0),
+
+            // За сегодня
+            'EARNED_DAY'       => (int)($personal['earned_day']  ?? 0),
+            'MAX_DAY'          => (int)($personal['max_day']     ?? 0),
+            'EFFICIENCY_DAY'   => (float)($personal['eff_day']   ?? 0),
+
+            // За всё время
+            'LECTURES_READ_TOTAL' => (int)$ts['lectures'],
+            'TASKS_DONE_TOTAL'    => (int)$ts['tasks'],
+            'HABITS_DONE_TOTAL'   => (int)$ts['habits'],
+            'REWARD_BALANCE'      => (int)($binding['UF_REWARD_BALANCE'] ?? 0),
         ]);
     }
 
@@ -120,7 +209,7 @@ if ($uids) {
     exit;
 }
 
-// Режим: по фильтру
+// ── Режим: по фильтру ──
 $page     = 1;
 $maxPages = 1000;
 while ($page <= $maxPages) {

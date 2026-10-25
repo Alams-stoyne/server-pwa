@@ -4,6 +4,7 @@
  *
  * Все количественные метрики активности продублированы в двух разрезах:
  * «за период» (stats_period_start..stats_period_end) и «за всё время».
+ * Дополнительно — «за сегодня» в блоке «Эффективность».
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -79,6 +80,12 @@ $periodTo   = (string)($stats['PERIOD_TO']   ?? '');
 $effColor = function (float $p): string {
     return $p < 30 ? '#c0392b' : ($p < 70 ? '#f5a623' : '#3a7d1c');
 };
+
+// Флаги для баннеров
+$themeCode     = trim((string)($binding['UF_THEME'] ?? ''));
+$hasConsent    = (bool)($stats['HAS_CONSENT'] ?? false);
+$consentGiven  = (bool)($stats['CONSENT'] ?? false);
+$excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven);
 ?>
 <?php require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php'; ?>
 
@@ -128,11 +135,31 @@ $effColor = function (float $p): string {
     .x5pwa-activity-table td { padding:8px 12px; border-bottom:1px solid #eee; font-size:13px; }
     .x5pwa-activity-table td.num { text-align:right; font-family:monospace; }
     .x5pwa-activity-table td.total { color:#888; }
+
+    .x5pwa-warn {
+        background:#fff4e0; border:1px solid #f5a623; padding:10px 14px;
+        border-radius:6px; margin-bottom:16px; font-size:13px; color:#8a4b00;
+    }
 </style>
 
 <div style="margin-bottom:12px">
     <a href="x5_pwa_users.php?lang=<?= LANGUAGE_ID ?>">← Ко всем пользователям</a>
 </div>
+
+<?php if (!$hasConsent || !$consentGiven): ?>
+    <div class="x5pwa-warn">
+        <b>Нет согласия на обработку ПД.</b>
+        Пользователь не участвует в статистике — эффективность и day-метрики не пересчитываются.
+        Данные на странице показывают «сырые» значения из журнала наград и HL, но в агрегатах
+        (общая статистика, компании, шапка users.php) этот пользователь исключён.
+    </div>
+<?php elseif ($themeCode === ''): ?>
+    <div class="x5pwa-warn">
+        <b>Направление не выбрано.</b>
+        По БМ пользователь без темы не участвует в статистике — эффективность и day-метрики
+        не пересчитываются (значения 0 или устаревшие). В агрегатах этот пользователь исключён.
+    </div>
+<?php endif ?>
 
 <div class="x5pwa-box">
     <h3>Идентификация</h3>
@@ -145,6 +172,16 @@ $effColor = function (float $p): string {
         <dd><?= fmt_ms($binding['UF_CREATED_AT'] ? $binding['UF_CREATED_AT']->getTimestamp() * 1000 : 0) ?></dd>
         <dt>Последняя активность</dt>
         <dd><?= fmt_ms($binding['UF_LAST_SEEN_AT'] ? $binding['UF_LAST_SEEN_AT']->getTimestamp() * 1000 : 0) ?></dd>
+        <dt>Направление</dt>
+        <dd>
+            <?php if ($themeCode !== ''): ?>
+                <span class="x5pwa-badge" style="background:#e0efff;color:#1e6bcc">
+                    <?= htmlspecialcharsbx($themeCode) ?>
+                </span>
+            <?php else: ?>
+                <span class="x5pwa-badge x5pwa-badge-none">не выбрано</span>
+            <?php endif ?>
+        </dd>
         <dt>Push-подписка</dt>
         <dd>
             <?php if ($sub): ?>
@@ -159,7 +196,7 @@ $effColor = function (float $p): string {
     </dl>
 </div>
 
-<!-- ЭФФЕКТИВНОСТЬ -->
+<!-- ЭФФЕКТИВНОСТЬ: период + сегодня -->
 <div class="x5pwa-eff-card">
     <h3>Эффективность</h3>
 
@@ -228,9 +265,15 @@ $effColor = function (float $p): string {
     </div>
 
     <div style="font-size:11px;color:#888;margin-top:16px">
-        <b>Возможно</b> = сумма дневных максимумов за период: BASE + направление пользователя + вклад его привычки (rewardPoints × timesPerDay).
+        <b>Возможно</b> = сумма дневных максимумов за период: BASE + направление пользователя + вклад его привычки
+        (rewardPoints × timesPerDay).
         <b>Собрано</b> = сумма фактически начисленных баллов из журнала наград.
         Значения пересчитываются при «Пересчитать кеши» в «Общей статистике».
+        <?php if ($excludedStats): ?>
+            <br>
+            <b style="color:#8a4b00">Для этого пользователя кеш не пересчитывается</b>
+            (нет темы и/или нет согласия) — day-метрики и эффективность могут быть неактуальны.
+        <?php endif ?>
     </div>
 </div>
 

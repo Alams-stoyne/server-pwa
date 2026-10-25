@@ -2,6 +2,8 @@
 /**
  * PWA — Максимум яблок по дням.
  * Учитываются только активные направления (темы) — фильтр в ThemesResolver.
+ *
+ * Дополнительно: проверка БМ — все темы должны давать одинаковый дневной максимум.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -106,8 +108,6 @@ $themes           = ThemesResolver::getAllCodes();
 $themesConfigured = ThemesResolver::isConfigured();
 $noActiveThemes   = $themesConfigured && !$themes;
 
-// Названия тем — из ThemesBuilder (включая деактивированные, чтобы
-// корректно подписывать старые коды из кэша). Для $themes выше — только активные.
 $themeTitles = [];
 try {
     foreach (\X5\Pwa\ThemesBuilder::getAll() as $t) {
@@ -295,6 +295,8 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
     .x5da-form input[type=date] { padding:6px 8px; border:1px solid #c5c9cf; border-radius:3px; }
     .x5da-legend { font-size:11px; color:#666; margin-top:8px; }
     .x5da-code { color:#888; font-size:10px; margin-left:4px; }
+    .x5da-bm-ok { background:#e6f5d8; border:1px solid #3a7d1c; padding:10px 14px; border-radius:6px; margin-bottom:12px; font-size:13px; color:#2c3e50; }
+    .x5da-bm-warn { background:#fff4e0; border:1px solid #f5a623; padding:10px 14px; border-radius:6px; margin-bottom:12px; font-size:13px; color:#8a4b00; }
 </style>
 
 <div style="margin-bottom:12px">
@@ -380,6 +382,59 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
     </div>
 </div>
 
+<?php
+// ── Проверка БМ: равенство дневного максимума по активным темам ──
+// Считаем по выбранной дате «from» (детализация ниже).
+$checkDate    = $from;
+$checkApples  = Storage::getDailyApplesFromCache($checkDate);
+if ($checkApples === null) {
+    $checkApples = StatsBuilder::calculateDailyApples($checkDate);
+}
+$checkBase     = (int)($checkApples['BASE'] ?? 0);
+$checkThemes   = $checkApples['THEMES'] ?? [];
+$checkValues   = [];
+foreach ($themes as $code) {
+    $checkValues[$code] = $checkBase + (int)($checkThemes[$code] ?? 0);
+}
+$checkMin = null;
+$checkMax = null;
+$checkMinCode = null;
+$checkMaxCode = null;
+foreach ($checkValues as $code => $v) {
+    if ($checkMin === null || $v < $checkMin) { $checkMin = $v; $checkMinCode = $code; }
+    if ($checkMax === null || $v > $checkMax) { $checkMax = $v; $checkMaxCode = $code; }
+}
+$bmDiff = ($checkMin !== null && $checkMax !== null) ? ($checkMax - $checkMin) : 0;
+?>
+<?php if ($themes && $checkMin !== null): ?>
+    <?php if ($bmDiff === 0): ?>
+        <div class="x5da-bm-ok">
+            <b>Проверка БМ: ОК.</b>
+            Все активные направления дают одинаковый дневной максимум
+            (без привычки): <b><?= (int)$checkMax ?> яблок</b> на <?= htmlspecialcharsbx($checkDate) ?>.
+            Пользователь не получает преимущества при смене темы.
+        </div>
+    <?php else: ?>
+        <div class="x5da-bm-warn">
+            <b>Проверка БМ: нарушение.</b>
+            На <?= htmlspecialcharsbx($checkDate) ?> дневной максимум по активным направлениям различается
+            (без привычки):
+            <br>
+            минимум — «<?= htmlspecialcharsbx($themeTitles[$checkMinCode] ?? $checkMinCode) ?>»:
+            <b><?= (int)$checkMin ?></b> яблок;
+            максимум — «<?= htmlspecialcharsbx($themeTitles[$checkMaxCode] ?? $checkMaxCode) ?>»:
+            <b><?= (int)$checkMax ?></b> яблок.
+            Разброс: <b>+<?= (int)$bmDiff ?></b>.
+            <br>
+            <span style="font-size:12px;color:#666;margin-top:6px;display:inline-block">
+                По БМ все направления должны давать одинаковый дневной максимум,
+                иначе пользователь получит преимущество при смене темы.
+                Проверьте количество и REWARD_POINTS лекций/практик по направлениям на эту дату.
+            </span>
+        </div>
+    <?php endif ?>
+<?php endif ?>
+
 <div class="x5da-box">
     <h3>Максимум яблок по дням (<?= count($rows) ?> дн.)</h3>
 
@@ -445,16 +500,12 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
 
         <div class="x5da-legend">
             <b>BASE</b> = charging + general_lectures + events + reflection + steps (отправка + подтверждение).<br>
-            <b>Направление</b> = theme_lectures (THEME=код) + tasks (THEME=код).
-            В таблице — только <b>активные</b> направления.<br>
+            <b>Направление</b> = theme_lectures (THEME=код) + tasks (THEME=код).<br>
             <b>Habit (max)</b> = верхняя граница вклада привычки одного пользователя за день
             (<code>rewardPoints × timesPerDay</code> по самой «дорогой» привычке).<br>
-            <b>MAX (тема)</b> = BASE + максимум по <i>активным</i> направлениям за день —
-            потолок пользователя, у которого самое «жирное» направление.<br>
-            <b>Потолок с привычкой</b> = MAX (тема) + Habit (max) — реальный максимум,
-            который может получить один пользователь за день.<br>
-            <b>Σ период</b> для MAX и Потолка — сумма <i>дневных</i> значений: в разные дни
-            «лучшая» тема может быть разной, поэтому это не равно <code>Σ BASE + max(Σ по темам)</code>.
+            <b>MAX (тема)</b> = BASE + максимум по активным направлениям за день.<br>
+            <b>Потолок с привычкой</b> = MAX (тема) + Habit (max).<br>
+            <b>Σ период</b> для MAX и Потолка — сумма дневных значений.
         </div>
     <?php endif ?>
 </div>
@@ -541,7 +592,6 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
                 $ibTheme = (int)Settings::iblockId('theme_lectures');
                 $ibTasks = (int)Settings::iblockId('tasks');
 
-                // Считаем суммы один раз — переиспользуем в блоке «Потолок».
                 $themeSums = [];
                 foreach ($themes as $code) {
                     $lectures = countIblockForDateByTheme($ibTheme, $from, $code);
@@ -601,27 +651,8 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
             Потолок считается по <i>свежим</i> данным ИБ (не из кэша), чтобы администратор видел
             актуальную картину, даже если кэш ещё не пересчитан.
             Если у пользователя нет привычки — его реальный потолок будет ниже на <b>habit (max)</b>.
-            <?php if ($bestCode !== null && $worstCode !== null): ?>
-                <br>
-                <br>
-                <b>Пример для <?= htmlspecialcharsbx($from) ?>:</b>
-                BASE = <b><?= (int)$baseLive ?></b>,
-                habit (max) = <b><?= (int)$habitMaxPerDay ?></b>.
-                <?php if ($bestCode === $worstCode): ?>
-                    Потолок для «<?= htmlspecialcharsbx($themeTitles[$bestCode] ?? $bestCode) ?>»
-                    = <?= (int)$baseLive ?> + <?= (int)$themeSums[$bestCode] ?> + <?= (int)$habitMaxPerDay ?>
-                    = <b><?= (int)($baseLive + $themeSums[$bestCode] + $habitMaxPerDay) ?></b>.
-                <?php else: ?>
-                    Максимум — для «<?= htmlspecialcharsbx($themeTitles[$bestCode] ?? $bestCode) ?>»:
-                    <?= (int)$baseLive ?> + <?= (int)$themeSums[$bestCode] ?> + <?= (int)$habitMaxPerDay ?>
-                    = <b><?= (int)($baseLive + $themeSums[$bestCode] + $habitMaxPerDay) ?></b>;
-                    минимум — для «<?= htmlspecialcharsbx($themeTitles[$worstCode] ?? $worstCode) ?>»:
-                    <?= (int)$baseLive ?> + <?= (int)$themeSums[$worstCode] ?> + <?= (int)$habitMaxPerDay ?>
-                    = <b><?= (int)($baseLive + $themeSums[$worstCode] + $habitMaxPerDay) ?></b>.
-                <?php endif ?>
-            <?php endif ?>
         </div>
     <?php endif ?>
 </div>
 
-<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php'; ?>
+<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php';

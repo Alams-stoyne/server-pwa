@@ -2,10 +2,9 @@
 /**
  * Список пользователей PWA (CAdminUiList).
  *
- * Колонки «Лекций / Заданий / Привычек / Шагов / Событий» — ЗА ПЕРИОД
- * (stats_period_start..stats_period_end).
+ * Колонки «Лекций / Заданий / Привычек / Шагов / Событий» — ЗА ПЕРИОД.
  * Total-версии («* (всего)») включены через «Настроить» / скрытые колонки.
- * Эффективность/Собрано/Недостаёт — за период.
+ * Эффективность/Собрано/Недостаёт — за период и за сегодня (в шапке).
  * Баланс — накопительный, за всё время.
  */
 
@@ -227,6 +226,7 @@ $data = \X5\Pwa\StatsBuilder::listUsers($params);
 
 // Период (для подписи в шапке и колонках)
 [$periodFrom, $periodTo] = \X5\Pwa\StatsBuilder::getEffectivePeriod();
+$todayLabel = date('Y-m-d');
 
 // Агрегат по фильтру (без пагинации)
 $agg = \X5\Pwa\StatsBuilder::getUsersAggregate([
@@ -334,13 +334,11 @@ foreach ($data['rows'] as $u) {
         'EARNED_DAY'       => (int)$u['EARNED_DAY'],
         'MAX_DAY'          => (int)$u['MAX_DAY'],
         'REWARD_BALANCE'   => (int)$u['REWARD_BALANCE'],
-        // Period-метрики
         'LECTURES_READ'    => (int)$u['LECTURES_READ'],
         'TASKS_DONE'       => (int)$u['TASKS_DONE'],
         'HABITS_DONE'      => (int)$u['HABITS_DONE'],
         'STEPS_CONFIRMED'  => (int)$u['STEPS_CONFIRMED'],
         'EVENTS_CONFIRMED' => (int)$u['EVENTS_CONFIRMED'],
-        // Total-метрики
         'LECTURES_READ_TOTAL' => (int)$u['LECTURES_READ_TOTAL'],
         'TASKS_DONE_TOTAL'    => (int)$u['TASKS_DONE_TOTAL'],
         'HABITS_DONE_TOTAL'   => (int)$u['HABITS_DONE_TOTAL'],
@@ -393,7 +391,6 @@ foreach ($data['rows'] as $u) {
     $row->AddViewField('REWARD_BALANCE',
         '<b style="font-family:monospace">' . (int)$u['REWARD_BALANCE'] . '</b>');
 
-    // Одиночные действия
     $actions = [
         [
             'ICON'    => 'view',
@@ -441,9 +438,6 @@ $lAdmin->AddFooter([
     ['counter' => true, 'title' => 'Выделено', 'value' => '0'],
 ]);
 
-// ─────────────────────────────────────────────────────────
-// Групповые действия
-// ─────────────────────────────────────────────────────────
 $lAdmin->AddGroupActionTable([
     'block' => [
         'type'   => 'button',
@@ -515,11 +509,37 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
             </div>
         </div>
     </div>
+
+    <div style="margin-top:14px;padding-top:14px;border-top:1px dashed #d6d9de">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+            <div>
+                <div style="font-size:11px;color:#666;text-transform:uppercase">Собрано сегодня</div>
+                <div style="font-size:22px;font-weight:600;color:#3a7d1c"><?= number_format((int)$agg['earned_day_sum'], 0, '', ' ') ?></div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#666;text-transform:uppercase">Возможно сегодня</div>
+                <div style="font-size:22px;font-weight:600;color:#555"><?= number_format((int)$agg['max_day_sum'], 0, '', ' ') ?></div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#666;text-transform:uppercase">Недостаёт сегодня</div>
+                <div style="font-size:22px;font-weight:600;color:#c0392b"><?= number_format((int)$agg['missing_day_sum'], 0, '', ' ') ?></div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#666;text-transform:uppercase">Средняя эффективность сегодня</div>
+                <div style="font-size:22px;font-weight:600;color:#1e6bcc">
+                    <?= number_format((float)$agg['avg_eff_day'], 1, '.', '') ?>%
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div style="font-size:11px;color:#888;margin-top:10px">
-        Период: <b><?= htmlspecialcharsbx($periodFrom) ?></b> — <b><?= htmlspecialcharsbx($periodTo) ?></b>.
-        Колонки «Лекций / Заданий / Привычек (период)» и «Эффективность / Собрано / Недостаёт» —
-        за этот период. Total-версии («* (всего)») включаются через «Настроить».
+        За период: <b><?= htmlspecialcharsbx($periodFrom) ?></b> — <b><?= htmlspecialcharsbx($periodTo) ?></b>
+        · Сегодня: <b><?= htmlspecialcharsbx($todayLabel) ?></b> (независимо от периода).
+        Колонки «Лекций / Заданий / Привычек (период)» — за период.
+        Total-версии («* (всего)») включаются через «Настроить».
         «Баланс» — накопительный, за всё время.
+        В агрегате участвуют только пользователи с выбранной темой и согласием на ПД.
     </div>
 </div>
 
@@ -667,9 +687,6 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 </script>
 
 <?php
-// ─────────────────────────────────────────────────────────
-// Обработка одиночных действий
-// ─────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && check_bitrix_sessid()
     && !empty($_POST['single_uid'])

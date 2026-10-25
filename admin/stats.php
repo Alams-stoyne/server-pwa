@@ -3,8 +3,8 @@
  * Общая статистика PWA.
  *
  * GLOBAL_PROGRESS: LECTURES_READ / TASKS_DONE / HABITS_DAYS / STEPS_CONFIRMED /
- * EVENTS_* — ЗА ПЕРИОД. Total-версии — в ключах *_TOTAL.
- * Эффективность (EARNED/MAX/MISSING/AVG) — за период.
+ * EVENTS_* — за период. Total-версии — в ключах *_TOTAL.
+ * Эффективность (EARNED/MAX/MISSING/AVG) — за период + day-секция (сегодня).
  * TOTAL_APPLES — сумма балансов пользователей (накопительный).
  */
 
@@ -84,11 +84,16 @@ $effColor = function (float $p): string {
     return $p < 30 ? '#c0392b' : ($p < 70 ? '#f5a623' : '#3a7d1c');
 };
 
-// Агрегаты
 $totalEarned  = (int)($gp['EARNED_TOTAL'] ?? 0);
 $totalMax     = (int)($gp['MAX_TOTAL'] ?? 0);
 $totalMissing = (int)($gp['MISSING_TOTAL'] ?? 0);
 $avgEff       = (float)($gp['AVG_EFFICIENCY'] ?? 0);
+
+$totalEarnedDay  = (int)($gp['EARNED_DAY_TOTAL'] ?? 0);
+$totalMaxDay     = (int)($gp['MAX_DAY_TOTAL'] ?? 0);
+$totalMissingDay = (int)($gp['MISSING_DAY_TOTAL'] ?? 0);
+$avgEffDay       = (float)($gp['AVG_EFFICIENCY_DAY'] ?? 0);
+$todayLabel      = (string)($gp['TODAY'] ?? date('Y-m-d'));
 
 $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     . '&lang=' . LANGUAGE_ID
@@ -108,6 +113,7 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     .x5pwa-metric-value.x5pwa-red    { color: #c0392b; }
     .x5pwa-metric-value.x5pwa-grey   { color: #555; }
     .x5pwa-metric-label { font-size: 12px; color: #666; text-transform: uppercase; margin-top: 6px; }
+    .x5pwa-subtitle { font-size: 13px; color: #666; margin: 4px 0 16px 0; font-weight: 400; }
     .x5pwa-table { width: 100%; border-collapse: collapse; }
     .x5pwa-table th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e5e9; background: #f8f9fa; font-size: 12px; font-weight: 600; color: #555; }
     .x5pwa-table td { padding: 8px 10px; border-bottom: 1px solid #eee; font-size: 13px; }
@@ -168,11 +174,12 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     </dl>
 </div>
 
-<!-- ЭФФЕКТИВНОСТЬ за период -->
+<!-- ЭФФЕКТИВНОСТЬ: за период -->
 <div class="x5pwa-box">
-    <h3>Эффективность <small style="color:#888;font-weight:400">
-        (<?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>)
-    </small></h3>
+    <h3>Эффективность</h3>
+    <div class="x5pwa-subtitle">
+        <b>За период</b> (<?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>)
+    </div>
     <div class="x5pwa-grid-4">
         <div class="x5pwa-metric">
             <div class="x5pwa-metric-value x5pwa-green"><?= $fmt($totalEarned) ?></div>
@@ -196,6 +203,39 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     <div class="x5pwa-bar" style="width:100%;margin-top:16px">
         <div class="x5pwa-bar-fill"
              style="width:<?= max(0, min(100, $avgEff)) ?>%;background:<?= $effColor($avgEff) ?>"></div>
+    </div>
+</div>
+
+<!-- ЭФФЕКТИВНОСТЬ: сегодня -->
+<div class="x5pwa-box">
+    <h3>Эффективность — сегодня</h3>
+    <div class="x5pwa-subtitle">
+        <b><?= htmlspecialcharsbx($todayLabel) ?></b>
+        (независимо от периода статистики; учитываются только пользователи с выбранной темой и согласием)
+    </div>
+    <div class="x5pwa-grid-4">
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-green"><?= $fmt($totalEarnedDay) ?></div>
+            <div class="x5pwa-metric-label">Собрано сегодня</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-grey"><?= $fmt($totalMaxDay) ?></div>
+            <div class="x5pwa-metric-label">Возможно сегодня</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-red"><?= $fmt($totalMissingDay) ?></div>
+            <div class="x5pwa-metric-label">Недостаёт сегодня</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value" style="color:<?= $effColor($avgEffDay) ?>">
+                <?= number_format($avgEffDay, 1, '.', '') ?>%
+            </div>
+            <div class="x5pwa-metric-label">Средняя эффективность сегодня</div>
+        </div>
+    </div>
+    <div class="x5pwa-bar" style="width:100%;margin-top:16px">
+        <div class="x5pwa-bar-fill"
+             style="width:<?= max(0, min(100, $avgEffDay)) ?>%;background:<?= $effColor($avgEffDay) ?>"></div>
     </div>
 </div>
 
@@ -253,8 +293,8 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     </table>
     <div style="font-size:11px;color:#888;margin-top:12px">
         «За период» — активности в диапазоне <?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>.
-        «За всё время» — за всё время существования пользователей (по данным модуля).
-        События «посещено/подтверждено» показаны только за период — total по событиям не хранится в GLOBAL_PROGRESS.
+        «За всё время» — за всё время существования пользователей.
+        Учитываются только пользователи с выбранной темой и согласием на ПД.
     </div>
 </div>
 
@@ -290,10 +330,14 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
                         <th style="width:40px">#</th>
                         <th>Компания</th>
                         <th style="text-align:right;width:70px">Юзеров</th>
-                        <th style="text-align:right">Собрано</th>
-                        <th style="text-align:right">Возможно</th>
-                        <th style="text-align:right">Недостаёт</th>
-                        <th style="text-align:right;width:70px">Эфф.</th>
+                        <th style="text-align:right">Собрано<br><small>период</small></th>
+                        <th style="text-align:right">Возможно<br><small>период</small></th>
+                        <th style="text-align:right">Недостаёт<br><small>период</small></th>
+                        <th style="text-align:right;width:70px">Эфф.<br><small>период</small></th>
+                        <th style="text-align:right">Собрано<br><small>сегодня</small></th>
+                        <th style="text-align:right">Возможно<br><small>сегодня</small></th>
+                        <th style="text-align:right">Недостаёт<br><small>сегодня</small></th>
+                        <th style="text-align:right;width:70px">Эфф.<br><small>сегодня</small></th>
                         <th style="text-align:right">Лекций</th>
                         <th style="text-align:right">Заданий</th>
                         <th style="text-align:right">Привычек</th>
@@ -311,6 +355,11 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
                         $earned  = (int)($c['EARNED'] ?? 0);
                         $max     = (int)($c['MAX'] ?? 0);
                         $missing = (int)($c['MISSING'] ?? 0);
+                        $earnedDay  = (int)($c['EARNED_DAY'] ?? 0);
+                        $maxDay     = (int)($c['MAX_DAY'] ?? 0);
+                        $missingDay = (int)($c['MISSING_DAY'] ?? 0);
+                        $percentDay = (float)($c['PERCENT_DAY'] ?? 0);
+                        $colorDay   = $effColor($percentDay);
                         $balance = (int)($c['TOTAL_APPLES'] ?? 0);
                         $lect    = (int)($c['LECTURES'] ?? 0);
                         $task    = (int)($c['TASKS'] ?? 0);
@@ -333,6 +382,12 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
                             <td style="text-align:right;font-weight:600;color:<?= $color ?>;font-family:monospace">
                                 <?= number_format($percent, 1, '.', '') ?>%
                             </td>
+                            <td class="x5pwa-num-green"><?= $fmt($earnedDay) ?></td>
+                            <td class="x5pwa-num-grey"><?= $fmt($maxDay) ?></td>
+                            <td class="x5pwa-num-red"><?= $missingDay > 0 ? '−' . $fmt($missingDay) : '0' ?></td>
+                            <td style="text-align:right;font-weight:600;color:<?= $colorDay ?>;font-family:monospace">
+                                <?= number_format($percentDay, 1, '.', '') ?>%
+                            </td>
                             <td class="x5pwa-num"><?= $fmt($lect) ?></td>
                             <td class="x5pwa-num"><?= $fmt($task) ?></td>
                             <td class="x5pwa-num"><?= $fmt($habit) ?></td>
@@ -352,6 +407,12 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
                         <td style="text-align:right;font-weight:700;color:<?= $effColor($avgEff) ?>;font-family:monospace">
                             <?= number_format($avgEff, 1, '.', '') ?>%
                         </td>
+                        <td class="x5pwa-num-green"><?= $fmt($totalEarnedDay) ?></td>
+                        <td class="x5pwa-num-grey"><?= $fmt($totalMaxDay) ?></td>
+                        <td class="x5pwa-num-red"><?= $totalMissingDay > 0 ? '−' . $fmt($totalMissingDay) : '0' ?></td>
+                        <td style="text-align:right;font-weight:700;color:<?= $effColor($avgEffDay) ?>;font-family:monospace">
+                            <?= number_format($avgEffDay, 1, '.', '') ?>%
+                        </td>
                         <td class="x5pwa-num"><?= $fmt($gp['LECTURES_READ'] ?? 0) ?></td>
                         <td class="x5pwa-num"><?= $fmt($gp['TASKS_DONE'] ?? 0) ?></td>
                         <td class="x5pwa-num"><?= $fmt($gp['HABITS_DAYS'] ?? 0) ?></td>
@@ -364,9 +425,10 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
         </div>
 
         <div style="font-size:11px;color:#888;margin-top:12px">
-            Колонки «Собрано / Возможно / Недостаёт / Эфф. / Лекций / Заданий / Привычек / Шагов / Событий» —
-            за период <?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>.
-            Колонка «Баланс» — накопительная, за всё время (сумма текущих балансов пользователей компании).
+            Колонки «Собрано / Возможно / Недостаёт / Эфф.» — <b>за период</b> и <b>за сегодня</b>.
+            Колонки «Лекций / Заданий / Привычек / Шагов / Событий» — за период.
+            Колонка «Баланс» — накопительная, за всё время.
+            Учитываются только пользователи с выбранной темой и согласием на ПД.
         </div>
     <?php endif ?>
 </div>

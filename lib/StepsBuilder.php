@@ -420,6 +420,12 @@ class StepsBuilder
         if ($totalUsers > 0 && $rank > 0) {
             $topPercent = max(1, (int)round(($rank / $totalUsers) * 100));
         }
+        
+        // ← ДОБАВЛЕНО: процент прогресса к цели (для fallback-логики клиента)
+        $goal            = self::GOAL;
+        $progressPercent = $goal > 0
+            ? round(min(100, $userTotal / $goal * 100), 2)
+            : 0.0;
 
         return [
             'TOTAL_STEPS' => $userTotal,
@@ -429,7 +435,63 @@ class StepsBuilder
             'TODAY_STEPS' => $todaySteps,
             'DAILY_AVG'   => $dailyAvg,
             'TOP_PERCENT' => $topPercent,
+            'PROGRESS_PERCENT' => $progressPercent,   // ← ДОБАВЛЕНО
         ];
+    }
+    
+    /**
+     * Даты, за которые шаги подтверждены (UF_STATUS = 'Y').
+     * Возвращает отсортированный массив YYYY-MM-DD (по возрастанию).
+     *
+     * Используется в /steps/summary для CONFIRMED_DATES.
+     * Период опционален: если задан, ограничивает выборку — но по умолчанию
+     * возвращаются все подтверждённые даты пользователя.
+     *
+     * @return string[]
+     */
+    public static function getConfirmedDates(
+        string $uid,
+        ?string $from = null,
+        ?string $to = null
+    ): array {
+        $uid = trim($uid);
+        if ($uid === '') return [];
+
+        try {
+            $conn      = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safeUid   = $sqlHelper->forSql($uid);
+
+            $sql = "SELECT DISTINCT UF_LOCAL_DATE
+                    FROM x5_pwa_steps
+                    WHERE UF_UID = '{$safeUid}'
+                      AND UF_STATUS = 'Y'";
+
+            if ($from !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
+                $safeFrom = $sqlHelper->forSql($from);
+                $sql .= " AND UF_LOCAL_DATE >= '{$safeFrom}'";
+            }
+            if ($to !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+                $safeTo = $sqlHelper->forSql($to);
+                $sql .= " AND UF_LOCAL_DATE <= '{$safeTo}'";
+            }
+
+            $sql .= " ORDER BY UF_LOCAL_DATE ASC";
+
+            $rows = $conn->query($sql)->fetchAll();
+            $out  = [];
+            foreach ($rows as $r) {
+                $d = trim((string)($r['UF_LOCAL_DATE'] ?? ''));
+                if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) $out[] = $d;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'getConfirmedDates failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
+                'StepsBuilder::getConfirmedDates'
+            );
+            return [];
+        }
     }
 
     // ─────────── Рейтинг ───────────

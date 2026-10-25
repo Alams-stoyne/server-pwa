@@ -182,6 +182,8 @@ class Dumper
         ];
         self::log('IB IDs: ' . json_encode($ibIds));
 
+        // Уникальность ID_LECTURE / ID_TASK = {CODE}-{DATE} гарантируется настройкой ИБ
+        // «Проверять уникальность символьного кода» (включена администратором).
         $raw = ContentBuilder::rawAll();
 
         foreach ($raw as $bucket => $items) {
@@ -285,13 +287,26 @@ class Dumper
                 'SLIDES' => TutorialBuilder::getSlides(),
             ];
             $map['config/workplaces.json'] = WorkplacesBuilder::getForCdn();
+
+            // ← ИЗМЕНЕНО: config/period.json отдаёт эффективный период
+            //   (START..END) и запланированный (PLANNED_START..PLANNED_END).
+            //   START/END обрезаются до «сегодня», потому что статистика за
+            //   будущие дни не считается. PLANNED_* — сырые настройки модуля,
+            //   могут быть в будущем (полезно для отображения «до какого числа
+            //   идёт челлендж»).
+            [$periodFrom, $periodTo] = StatsBuilder::getEffectivePeriod();
+            $plannedStart = Settings::statsPeriodStart();
+            $plannedEnd   = Settings::statsPeriodEnd();
+
             $map['config/period.json'] = [
-                'START' => Settings::statsPeriodStart(),
-                'END'   => Settings::statsPeriodEnd(),
+                'START'         => $periodFrom,
+                'END'           => $periodTo,
+                'PLANNED_START' => $plannedStart !== '' ? $plannedStart : $periodFrom,
+                'PLANNED_END'   => $plannedEnd   !== '' ? $plannedEnd   : $periodTo,
+                'TODAY'         => $today,
             ];
-            // Правила дневных лимитов (антифрод).
-            // Клиент кэширует на 1 час; при изменении в настройках модуля —
-            // ставится флаг limits_rules_dirty, Scheduler пересобирает дампы.
+
+            // config/limits_rules.json — правила дневных лимитов
             $map['config/limits_rules.json'] = [
                 'UPDATED_AT' => (new \Bitrix\Main\Type\DateTime())->toString(),
                 'LIMITS'     => [
