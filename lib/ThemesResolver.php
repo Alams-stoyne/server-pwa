@@ -10,6 +10,8 @@ namespace X5\Pwa;
  *
  * Плюс — умеет собирать актуальный список кодов тем из IB
  * «Направления» (для тех мест, где раньше был хардкод).
+ *
+ * Учитываются ТОЛЬКО активные темы (ACTIVE = 'Y').
  */
 class ThemesResolver
 {
@@ -18,7 +20,7 @@ class ThemesResolver
     /** ID элемента темы → CODE ('5' → 'energy') */
     private static array $byId = [];
 
-    /** Порядок кодов в том виде, как они выведены в IB */
+    /** Порядок кодов в том виде, как они выведены в IB (только активные) */
     private static array $codes = [];
 
     public static function resolve($value): ?string
@@ -36,18 +38,31 @@ class ThemesResolver
             return self::$byId[$raw];
         }
 
-        // Уже строка-код (обратная совместимость со старыми L-значениями)
+        // Уже строка-код (обратная совместимость со старыми L-значениями
+        // и с кодами, которые приходят из ContentBuilder для L-свойств).
+        // ВНИМАНИЕ: для деактивированных E-тем здесь вернётся голый ID,
+        // и вызывающий код должен сам отсеять такие значения по getAllCodes().
         return $raw;
     }
 
     /**
-     * Список актуальных кодов тем, отсортированный как в IB.
+     * Список актуальных (активных) кодов тем, отсортированный как в IB.
      * @return string[]
      */
     public static function getAllCodes(): array
     {
         self::loadOnce();
         return self::$codes;
+    }
+
+    /**
+     * Настроен ли ИБ «Направления».
+     * Нужен, чтобы отличать «модуль не сконфигурирован» (fallback на хардкод)
+     * от «все темы деактивированы» (пустой список — это валидный результат).
+     */
+    public static function isConfigured(): bool
+    {
+        return Settings::iblockId('themes') > 0;
     }
 
     /**
@@ -73,7 +88,11 @@ class ThemesResolver
 
         $rs = \CIBlockElement::GetList(
             ['SORT' => 'ASC', 'ID' => 'ASC'],
-            ['IBLOCK_ID' => $ibId, 'CHECK_PERMISSIONS' => 'N'],
+            [
+                'IBLOCK_ID'         => $ibId,
+                'ACTIVE'            => 'Y',
+                'CHECK_PERMISSIONS' => 'N',
+            ],
             false,
             false,
             ['ID', 'CODE', 'XML_ID']

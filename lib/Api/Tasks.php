@@ -29,6 +29,14 @@ class Tasks
         // Поддерживаем оба формата ID_TASK, которые встречаются у клиента:
         //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
         //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты (как присылает клиент)
+        //
+        // ИЗМЕНЕНО: результат awardTask сохраняется в $rewardPoints и
+        // попадает в ответ как REWARD_POINTS — ТОЛЬКО когда награда
+        // реально начислена в этом запросе (added === true). При повторном
+        // complete (гонка/retry) added === false — поля в ответе не будет,
+        // клиент не покажет «+N» второй раз.
+        $rewardPoints = 0;
+
         try {
             if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $k, $m)) {
                 $elementId = (int)$m[1];
@@ -52,6 +60,10 @@ class Tasks
                         (string)$info['date'],
                         $localDate
                     );
+
+                    if (!empty($res['added'])) {
+                        $rewardPoints = (int)($res['points'] ?? 0);
+                    }
 
                     \Bitrix\Main\Diag\Debug::writeToFile(
                         sprintf(
@@ -84,10 +96,17 @@ class Tasks
             );
         }
 
-        return [
+        $response = [
             'RESULT'          => 'OK',
             'ID_COMPLETE'     => (int)(microtime(true) * 1000),
             'SERVER_DATETIME' => Storage::now()->format('Y-m-d\TH:i:s\Z'),
         ];
+
+        // Поле присутствует только если награда реально начислена
+        if ($rewardPoints > 0) {
+            $response['REWARD_POINTS'] = $rewardPoints;
+        }
+
+        return $response;
     }
 }

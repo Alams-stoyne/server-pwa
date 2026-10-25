@@ -69,12 +69,6 @@ class StatsBuilder
 
     // ───────── Daily Apples ─────────
 
-    /**
-     * Считает максимум яблок на дату в разрезе BASE + THEMES.
-     *
-     * BASE = charging + general_lectures + events + reflection + steps
-     * THEMES[code] = theme_lectures(THEME=code) + tasks(THEME=code)
-     */
     public static function calculateDailyApples(string $date): array
     {
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
@@ -82,7 +76,9 @@ class StatsBuilder
         }
 
         $themes = ThemesResolver::getAllCodes();
-        if (!$themes) $themes = ['energy', 'antistress', 'body', 'balance'];
+        if (!$themes && !ThemesResolver::isConfigured()) {
+            $themes = ['energy', 'antistress', 'body', 'balance'];
+        }
 
         $themeApples = [];
         foreach ($themes as $code) {
@@ -91,25 +87,21 @@ class StatsBuilder
 
         $base = 0;
 
-        // charging
         $ibCharging = (int)Settings::iblockId('charging');
         if ($ibCharging > 0) {
             $base += self::sumRewardPointsForDate($ibCharging, $date);
         }
 
-        // general_lectures
         $ibGeneral = (int)Settings::iblockId('general_lectures');
         if ($ibGeneral > 0) {
             $base += self::sumRewardPointsForDate($ibGeneral, $date);
         }
 
-        // events
         $ibEvents = (int)Settings::iblockId('events');
         if ($ibEvents > 0) {
             $base += self::sumRewardPointsForDate($ibEvents, $date);
         }
 
-        // reflection
         $reflPoints = 0;
         try {
             $setting = ReflectionBuilder::getForDate($date);
@@ -118,17 +110,14 @@ class StatsBuilder
         if ($reflPoints <= 0) $reflPoints = Settings::rewardReflectionPoints();
         $base += $reflPoints;
 
-        // steps
         $base += Settings::rewardStepsSentPoints();
         $base += Settings::rewardStepsApprovedPoints();
 
-        // theme_lectures
         $ibTheme = (int)Settings::iblockId('theme_lectures');
         if ($ibTheme > 0) {
             self::sumRewardPointsForDateByTheme($ibTheme, $date, $themeApples);
         }
 
-        // tasks
         $ibTasks = (int)Settings::iblockId('tasks');
         if ($ibTasks > 0) {
             self::sumRewardPointsForDateByTheme($ibTasks, $date, $themeApples);
@@ -140,17 +129,6 @@ class StatsBuilder
         ];
     }
 
-    /**
-     * Сумма REWARD_POINTS всех активных элементов ИБ за указанную дату.
-     *
-     * ВАЖНО: фильтр по дате делается через DATE_ACTIVE_FROM (виртуальное поле
-     * «дата начала активности без времени»), а НЕ через ACTIVE_FROM.
-     * Формат значения — формат даты сайта (SHORT), его даёт ConvertTimeStamp.
-     *
-     * Проверено диагностикой: ACTIVE_FROM с ISO/сайт-форматом не фильтрует;
-     * DATE_ACTIVE_FROM с ISO-форматом тоже не фильтрует; работает только
-     * DATE_ACTIVE_FROM + формат сайта.
-     */
     private static function sumRewardPointsForDate(int $iblockId, string $date): int
     {
         if ($iblockId <= 0) return 0;
@@ -185,12 +163,6 @@ class StatsBuilder
         return $total;
     }
 
-    /**
-     * Группирует REWARD_POINTS по THEME (для theme_lectures и tasks).
-     * THEME — свойство типа E (привязка к элементу ИБ «Направления»).
-     *
-     * @param array<string,int> $themeApples — модифицируется на месте
-     */
     private static function sumRewardPointsForDateByTheme(int $iblockId, string $date, array &$themeApples): void
     {
         if ($iblockId <= 0) return;
@@ -218,7 +190,6 @@ class StatsBuilder
         while ($el = $rs->Fetch()) {
             $elId = (int)$el['ID'];
 
-            // THEME — ID элемента ИБ «Направления»
             $themeValue = '';
             $props = \CIBlockElement::GetProperty($iblockId, $elId, [], ['CODE' => 'THEME']);
             if ($p = $props->Fetch()) {
@@ -229,21 +200,18 @@ class StatsBuilder
             $themeCode = ThemesResolver::resolve($themeValue);
             if ($themeCode === null || $themeCode === '') continue;
 
-            // REWARD_POINTS
+            if (!isset($themeApples[$themeCode])) continue;
+
             $points = 0;
             $props2 = \CIBlockElement::GetProperty($iblockId, $elId, [], ['CODE' => 'REWARD_POINTS']);
             if ($p2 = $props2->Fetch()) {
                 $points = max(0, (int)($p2['VALUE'] ?? 0));
             }
 
-            if (!isset($themeApples[$themeCode])) $themeApples[$themeCode] = 0;
             $themeApples[$themeCode] += $points;
         }
     }
 
-    /**
-     * Максимум для конкретного пользователя на дату.
-     */
     public static function calculateDailyMaxForUser(string $uid, string $date): int
     {
         $binding = Storage::getUidBinding($uid);
@@ -314,7 +282,9 @@ class StatsBuilder
 
         foreach (HabitsBuilder::getAll() as $h) {
             if ((string)$h['id'] === $habitId) {
-                return (int)($h['rewardPoints'] ?? 0);
+                $points = (int)($h['rewardPoints'] ?? 0);
+                $times  = max(1, (int)($h['timesPerDay'] ?? 1));
+                return $points * $times;
             }
         }
         return 0;
@@ -331,6 +301,15 @@ class StatsBuilder
 
     // ───────── Global ─────────
 
+    /**
+     * Сводная статистика.
+     *
+     * В GLOBAL_PROGRESS:
+     *   • LECTURES_READ / TASKS_DONE / HABITS_DAYS / STEPS_CONFIRMED — ЗА ПЕРИОД
+     *     (семантика меняется по сравнению с предыдущей версией — period);
+     *   • *_TOTAL — за всё время (добавлены для обратной совместимости);
+     *   • EARNED_TOTAL / MAX_TOTAL / MISSING_TOTAL / AVG_EFFICIENCY — за период.
+     */
     public static function buildGlobal(): array
     {
         [$from, $to] = self::getEffectivePeriod();
@@ -338,24 +317,44 @@ class StatsBuilder
         $wpMap = WorkplacesBuilder::getMap();
         $wpAgg = [];
         foreach ($wpMap as $code => $_) {
-            $wpAgg[$code] = ['users' => 0, 'apples' => 0, 'earned' => 0, 'max' => 0];
+            $wpAgg[$code] = [
+                'users' => 0, 'apples' => 0, 'earned' => 0, 'max' => 0,
+                'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+                'events_v' => 0, 'events_c' => 0,
+            ];
         }
 
         $uids     = Storage::getActiveUidsForStats();
         $bindings = Storage::getBindingsForStats($uids);
+        $periodStats = Storage::getPeriodStatsForUids($uids, $from, $to);
 
         $totalApples     = 0;
         $totalUsers      = 0;
-        $lecturesRead    = 0;
-        $tasksDone       = 0;
-        $habitsDaysTotal = 0;
-        $stepsConfirmed  = 0;
+        $stepsConfirmedTotal = 0;
+
+        // Периодные значения
+        $lecturesPeriod = 0;
+        $tasksPeriod    = 0;
+        $habitsPeriod   = 0;
+        $stepsPeriod    = 0;
+        $eventsVisitedPeriod   = 0;
+        $eventsConfirmedPeriod = 0;
+
+        // Total (за всё время) — для обратной совместимости
+        $lecturesTotal = 0;
+        $tasksTotal    = 0;
+        $habitsTotal   = 0;
+
+        $totalEarned  = 0;
+        $totalMax     = 0;
 
         $applesCache = [];
 
         $habitPointsCache = [];
         foreach (HabitsBuilder::getAll() as $h) {
-            $habitPointsCache[(string)$h['id']] = (int)($h['rewardPoints'] ?? 0);
+            $points = (int)($h['rewardPoints'] ?? 0);
+            $times  = max(1, (int)($h['timesPerDay'] ?? 1));
+            $habitPointsCache[(string)$h['id']] = $points * $times;
         }
 
         foreach ($bindings as $uid => $b) {
@@ -364,6 +363,7 @@ class StatsBuilder
 
             $totalUsers++;
             $totalApples += (int)$b['reward_balance'];
+            $stepsConfirmedTotal += (int)$b['total_steps'];
 
             [$userFrom, $userTo] = self::getUserPeriod($b['created_ts'], $from, $to);
 
@@ -381,24 +381,44 @@ class StatsBuilder
             $earned   = Storage::getEarnedBetween($uid, $userFrom, $userTo);
             $maxTotal = self::sumDailyMaxForUser($userFrom, $userTo, $themeCode, $habitPoints, $applesCache);
 
+            $totalEarned += $earned;
+            $totalMax    += $maxTotal;
+
+            // Period-метрики (batched, 5 SQL на всё)
+            $ps = $periodStats[$uid] ?? [
+                'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+                'events_visited' => 0, 'events_confirmed' => 0,
+            ];
+
+            $lecturesPeriod        += (int)$ps['lectures'];
+            $tasksPeriod           += (int)$ps['tasks'];
+            $habitsPeriod          += (int)$ps['habits'];
+            $stepsPeriod           += (int)$ps['steps'];
+            $eventsVisitedPeriod   += (int)$ps['events_visited'];
+            $eventsConfirmedPeriod += (int)$ps['events_confirmed'];
+
             if ($wp !== '' && isset($wpAgg[$wp])) {
-                $wpAgg[$wp]['earned'] += $earned;
-                $wpAgg[$wp]['max']    += $maxTotal;
+                $wpAgg[$wp]['earned']   += $earned;
+                $wpAgg[$wp]['max']      += $maxTotal;
+                $wpAgg[$wp]['lectures'] += (int)$ps['lectures'];
+                $wpAgg[$wp]['tasks']    += (int)$ps['tasks'];
+                $wpAgg[$wp]['habits']   += (int)$ps['habits'];
+                $wpAgg[$wp]['steps']    += (int)$ps['steps'];
+                $wpAgg[$wp]['events_v'] += (int)$ps['events_visited'];
+                $wpAgg[$wp]['events_c'] += (int)$ps['events_confirmed'];
             }
 
-            try {
-                $reads = Storage::getReads($uid);
-                $tasks = Storage::getTasks($uid);
-                $lecturesRead += count($reads);
-                $tasksDone    += count($tasks);
+            // Total-метрики — считаем, но только агрегированно, без N+1
+            // (getPeriodStatsForUids уже отдаёт period; для total используем
+            //  getStatsForUids отдельно ниже, если понадобится — сейчас упрощаем)
+        }
 
-                $habitData = Storage::getHabits($uid);
-                foreach ($habitData as $list) {
-                    if (is_array($list)) $habitsDaysTotal += count($list);
-                }
-            } catch (\Throwable $e) {}
-
-            $stepsConfirmed += (int)$b['total_steps'];
+        // Total по действиям — одним пакетом
+        $totalStats = Storage::getStatsForUids($uids);
+        foreach ($totalStats as $ts) {
+            $lecturesTotal += (int)$ts['lectures'];
+            $tasksTotal    += (int)$ts['tasks'];
+            $habitsTotal   += (int)$ts['habits'];
         }
 
         $list = [];
@@ -418,19 +438,49 @@ class StatsBuilder
                 'PERCENT'      => $percent,
                 'LOGO'         => (string)$wp['logo'],
                 'TOTAL_APPLES' => (int)$agg['apples'],
+                'USERS'        => (int)$agg['users'],
+                'EARNED'       => (int)$agg['earned'],
+                'MAX'          => (int)$agg['max'],
+                'MISSING'      => max(0, (int)$agg['max'] - (int)$agg['earned']),
+                'LECTURES'     => (int)$agg['lectures'],
+                'TASKS'        => (int)$agg['tasks'],
+                'HABITS'       => (int)$agg['habits'],
+                'STEPS'        => (int)$agg['steps'],
+                'EVENTS_VISITED'   => (int)$agg['events_v'],
+                'EVENTS_CONFIRMED' => (int)$agg['events_c'],
             ];
         }
         usort($list, fn($a, $b) => $b['PERCENT'] <=> $a['PERCENT']);
 
+        $totalMissing = max(0, $totalMax - $totalEarned);
+        $avgEfficiency = $totalMax > 0
+            ? round($totalEarned / $totalMax * 100, 2)
+            : 0.0;
+
         return [
             'RESULT'          => 'OK',
             'GLOBAL_PROGRESS' => [
+                // За период (основные)
+                'LECTURES_READ'    => $lecturesPeriod,
+                'TASKS_DONE'       => $tasksPeriod,
+                'HABITS_DAYS'      => $habitsPeriod,
+                'STEPS_CONFIRMED'  => $stepsPeriod,
+                'EVENTS_VISITED'   => $eventsVisitedPeriod,
+                'EVENTS_CONFIRMED' => $eventsConfirmedPeriod,
+
+                // За всё время (для обратной совместимости)
+                'LECTURES_READ_TOTAL'   => $lecturesTotal,
+                'TASKS_DONE_TOTAL'      => $tasksTotal,
+                'HABITS_DAYS_TOTAL'     => $habitsTotal,
+                'STEPS_CONFIRMED_TOTAL' => $stepsConfirmedTotal,
+
+                // Яблоки / период
                 'TOTAL_APPLES'    => $totalApples,
                 'TOTAL_USERS'     => $totalUsers,
-                'LECTURES_READ'   => $lecturesRead,
-                'TASKS_DONE'      => $tasksDone,
-                'HABITS_DAYS'     => $habitsDaysTotal,
-                'STEPS_CONFIRMED' => $stepsConfirmed,
+                'EARNED_TOTAL'    => $totalEarned,
+                'MAX_TOTAL'       => $totalMax,
+                'MISSING_TOTAL'   => $totalMissing,
+                'AVG_EFFICIENCY'  => $avgEfficiency,
             ],
             'COMPANIES'       => ['LIST' => $list],
             'PERIOD'          => ['FROM' => $from, 'TO' => $to],
@@ -491,6 +541,11 @@ class StatsBuilder
             'STEPS_CONFIRMED' => $stepsConfirmed,
             'EFFICIENCY_ALL'  => $effAll,
             'EFFICIENCY_DAY'  => $effDay,
+            'EARNED_ALL'      => (int)($binding['earned_all'] ?? 0),
+            'MAX_ALL'         => (int)($binding['max_all'] ?? 0),
+            'MISSING_ALL'     => (int)($binding['missing_all'] ?? 0),
+            'EARNED_DAY'      => (int)($binding['earned_day'] ?? 0),
+            'MAX_DAY'         => (int)($binding['max_day'] ?? 0),
         ] + $company;
     }
 
@@ -518,7 +573,9 @@ class StatsBuilder
 
         $habitPointsCache = [];
         foreach (HabitsBuilder::getAll() as $h) {
-            $habitPointsCache[(string)$h['id']] = (int)($h['rewardPoints'] ?? 0);
+            $points = (int)($h['rewardPoints'] ?? 0);
+            $times  = max(1, (int)($h['timesPerDay'] ?? 1));
+            $habitPointsCache[(string)$h['id']] = $points * $times;
         }
 
         $applesCache = [];
@@ -572,7 +629,9 @@ class StatsBuilder
 
         $habitPointsCache = [];
         foreach (HabitsBuilder::getAll() as $h) {
-            $habitPointsCache[(string)$h['id']] = (int)($h['rewardPoints'] ?? 0);
+            $points = (int)($h['rewardPoints'] ?? 0);
+            $times  = max(1, (int)($h['timesPerDay'] ?? 1));
+            $habitPointsCache[(string)$h['id']] = $points * $times;
         }
 
         $computed = [];
@@ -621,6 +680,11 @@ class StatsBuilder
                 'created_ts'  => $b['created_ts'],
                 'steps'       => $b['total_steps'],
                 'rank'        => 0,
+                'earned_all'  => $earnedAll,
+                'max_all'     => $maxTotal,
+                'missing_all' => max(0, $maxTotal - $earnedAll),
+                'earned_day'  => $earnedToday,
+                'max_day'     => $todayMax,
             ];
         }
 
@@ -640,6 +704,11 @@ class StatsBuilder
                 'eff_all'     => $computed[$uid]['eff_all'],
                 'eff_day'     => $computed[$uid]['eff_day'],
                 'habits_days' => $computed[$uid]['habits_days'],
+                'earned_all'  => $computed[$uid]['earned_all'],
+                'max_all'     => $computed[$uid]['max_all'],
+                'missing_all' => $computed[$uid]['missing_all'],
+                'earned_day'  => $computed[$uid]['earned_day'],
+                'max_day'     => $computed[$uid]['max_day'],
             ];
         }
 
@@ -660,6 +729,13 @@ class StatsBuilder
 
     // ───────── Users list (админка) ─────────
 
+    /**
+     * Список пользователей для админки.
+     *
+     * ВАЖНО: LECTURES_READ / TASKS_DONE / HABITS_DONE / STEPS_CONFIRMED /
+     * EVENTS_* — ЗА ПЕРИОД (stats_period_start..stats_period_end).
+     * Total-версии доступны как *_TOTAL.
+     */
     public static function listUsers(array $params = []): array
     {
         $paginated = Storage::listUidBindings($params);
@@ -675,15 +751,23 @@ class StatsBuilder
             ];
         }
 
-        $uids     = array_column($rows, 'UF_UID');
-        $stats    = Storage::getStatsForUids($uids);
+        $uids = array_column($rows, 'UF_UID');
+
+        [$periodFrom, $periodTo] = self::getEffectivePeriod();
+        $periodStats = Storage::getPeriodStatsForUids($uids, $periodFrom, $periodTo);
+        $totalStats  = Storage::getStatsForUids($uids);
+
         $subs     = Storage::getSubscriptionsForUids($uids);
         $activity = Storage::getLastActivityForUids($uids);
 
         $out = [];
         foreach ($rows as $b) {
             $uid = (string)$b['UF_UID'];
-            $s   = $stats[$uid] ?? ['lectures' => 0, 'tasks' => 0, 'habits' => 0];
+            $ps  = $periodStats[$uid] ?? [
+                'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+                'events_visited' => 0, 'events_confirmed' => 0,
+            ];
+            $ts  = $totalStats[$uid] ?? ['lectures' => 0, 'tasks' => 0, 'habits' => 0];
 
             $lastSeen = $b['UF_LAST_SEEN_AT']
                 ? $b['UF_LAST_SEEN_AT']->getTimestamp() * 1000 : 0;
@@ -709,12 +793,37 @@ class StatsBuilder
                 'LAST_SEEN_AT'     => $lastSeen,
                 'LAST_ACTIVITY_AT' => $lastActive,
                 'HAS_SUBSCRIPTION' => !empty($subs[$uid]),
-                'LECTURES_READ'    => $s['lectures'],
-                'TASKS_DONE'       => $s['tasks'],
-                'HABITS_DONE'      => $s['habits'],
+
+                // За период
+                'LECTURES_READ'    => (int)$ps['lectures'],
+                'TASKS_DONE'       => (int)$ps['tasks'],
+                'HABITS_DONE'      => (int)$ps['habits'],
+                'STEPS_CONFIRMED'  => (int)$ps['steps'],
+                'EVENTS_VISITED'   => (int)$ps['events_visited'],
+                'EVENTS_CONFIRMED' => (int)$ps['events_confirmed'],
+
+                // Total (за всё время)
+                'LECTURES_READ_TOTAL' => (int)$ts['lectures'],
+                'TASKS_DONE_TOTAL'    => (int)$ts['tasks'],
+                'HABITS_DONE_TOTAL'   => (int)$ts['habits'],
+
+                // Блокировка
                 'BLOCKED'          => $blocked,
                 'BLOCKED_AT'       => $blockedAt,
                 'BLOCK_REASON'     => (string)($b['UF_BLOCK_REASON'] ?? ''),
+
+                // Эффективность (за период)
+                'EFFICIENCY_ALL'   => (float)($b['UF_EFFICIENCY_ALL'] ?? 0),
+                'EFFICIENCY_DAY'   => (float)($b['UF_EFFICIENCY_DAY'] ?? 0),
+                'EARNED_ALL'       => (int)($b['UF_EARNED_ALL'] ?? 0),
+                'MAX_ALL'          => (int)($b['UF_MAX_ALL'] ?? 0),
+                'MISSING_ALL'      => (int)($b['UF_MISSING_ALL'] ?? 0),
+                'EARNED_DAY'       => (int)($b['UF_EARNED_DAY'] ?? 0),
+                'MAX_DAY'          => (int)($b['UF_MAX_DAY'] ?? 0),
+                'REWARD_BALANCE'   => (int)($b['UF_REWARD_BALANCE'] ?? 0),
+
+                'PERIOD_FROM'      => $periodFrom,
+                'PERIOD_TO'        => $periodTo,
             ];
         }
 
@@ -727,8 +836,86 @@ class StatsBuilder
         ];
     }
 
+    public static function getUsersAggregate(array $params = []): array
+    {
+        $empty = ['total' => 0, 'earned_sum' => 0, 'max_sum' => 0,
+                  'missing_sum' => 0, 'avg_eff' => 0.0, 'balance_sum' => 0];
+
+        $conn      = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+
+        $where = ['1=1'];
+
+        if (!empty($params['search'])) {
+            $s = $sqlHelper->forSql('%' . $params['search'] . '%');
+            $where[] = "(UF_UID LIKE '{$s}' OR UF_FIO LIKE '{$s}' OR UF_NICKNAME LIKE '{$s}' OR UF_WORKPLACE LIKE '{$s}')";
+        }
+        if (!empty($params['theme'])) {
+            $safe = $sqlHelper->forSql((string)$params['theme']);
+            $where[] = "UF_THEME = '{$safe}'";
+        }
+        $blocked = (string)($params['blocked'] ?? '');
+        if ($blocked === 'Y') {
+            $where[] = "UF_BLOCKED = 'Y'";
+        } elseif ($blocked === 'N') {
+            $where[] = "(UF_BLOCKED IS NULL OR UF_BLOCKED != 'Y')";
+        }
+
+        if (!empty($params['active_from'])) {
+            $safe = $sqlHelper->forSql((string)$params['active_from']);
+            $where[] = "UF_LAST_SEEN_AT >= '{$safe}'";
+        }
+        if (!empty($params['active_to'])) {
+            $safe = $sqlHelper->forSql((string)$params['active_to']);
+            $where[] = "UF_LAST_SEEN_AT <= '{$safe}'";
+        }
+        if (empty($params['active_from']) && empty($params['active_to'])
+            && !empty($params['activeDays'])) {
+            $days = max(1, (int)$params['activeDays']);
+            $where[] = "UF_LAST_SEEN_AT >= DATE_SUB(NOW(), INTERVAL {$days} DAY)";
+        }
+
+        $whereSql = implode(' AND ', $where);
+
+        $sql = "SELECT
+                    COUNT(*) AS C,
+                    COALESCE(SUM(UF_EARNED_ALL), 0) AS E,
+                    COALESCE(SUM(UF_MAX_ALL), 0) AS M,
+                    COALESCE(SUM(UF_MISSING_ALL), 0) AS MI,
+                    COALESCE(AVG(NULLIF(UF_EFFICIENCY_ALL, 0)), 0) AS A,
+                    COALESCE(SUM(UF_REWARD_BALANCE), 0) AS B
+                FROM x5_pwa_uid_bindings
+                WHERE {$whereSql}";
+
+        try {
+            $row = $conn->query($sql)->fetch();
+            return [
+                'total'       => (int)($row['C'] ?? 0),
+                'earned_sum'  => (int)($row['E'] ?? 0),
+                'max_sum'     => (int)($row['M'] ?? 0),
+                'missing_sum' => (int)($row['MI'] ?? 0),
+                'avg_eff'     => round((float)($row['A'] ?? 0), 2),
+                'balance_sum' => (int)($row['B'] ?? 0),
+            ];
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'getUsersAggregate failed: ' . $e->getMessage(),
+                'StatsBuilder::getUsersAggregate',
+                '/x5.pwa.log'
+            );
+            return $empty;
+        }
+    }
+
     // ───────── Старый buildUser (для user_detail.php) ─────────
 
+    /**
+     * Детальная статистика одного пользователя.
+     *
+     * Total-ключи (LECTURES_READ, TASKS_DONE, HABITS_DONE, EVENTS_VISITED,
+     * EVENTS_CONFIRMED) — за всё время (обратная совместимость).
+     * Добавлены *_PERIOD версии — за stats_period_start..stats_period_end.
+     */
     public static function buildUser(string $uid): array
     {
         $reads     = Storage::getReads($uid);
@@ -835,6 +1022,12 @@ class StatsBuilder
         $selectedHabit = Storage::getSelectedHabit($uid);
         $eventStats    = Storage::getEventStatsForUid($uid);
 
+        $personal = Storage::getBindingForPersonal($uid);
+
+        // Period-метрики
+        [$periodFrom, $periodTo] = self::getEffectivePeriod();
+        $ps = Storage::getPeriodStatsForUid($uid, $periodFrom, $periodTo);
+
         return [
             'LECTURES_READ'    => count($reads),
             'LECTURES_THEME'   => max(0, count($reads) - $lecturesGeneral - $chargingsDone),
@@ -864,6 +1057,26 @@ class StatsBuilder
             'CONSENT_LOCAL_DT' => $consent['localDt'],
             'HAS_CONSENT'      => $consent['hasConsent'],
             'SELECTED_HABIT'   => $selectedHabit,
+
+            'RANK'             => (int)($personal['rank'] ?? 0),
+            'EFFICIENCY_ALL'   => (float)($personal['eff_all'] ?? 0),
+            'EFFICIENCY_DAY'   => (float)($personal['eff_day'] ?? 0),
+            'EARNED_ALL'       => (int)($personal['earned_all'] ?? 0),
+            'MAX_ALL'          => (int)($personal['max_all'] ?? 0),
+            'MISSING_ALL'      => (int)($personal['missing_all'] ?? 0),
+            'EARNED_DAY'       => (int)($personal['earned_day'] ?? 0),
+            'MAX_DAY'          => (int)($personal['max_day'] ?? 0),
+            'HABITS_DAYS'      => (int)($personal['habits_days'] ?? 0),
+
+            // Period
+            'PERIOD_FROM'               => $periodFrom,
+            'PERIOD_TO'                 => $periodTo,
+            'LECTURES_READ_PERIOD'      => (int)$ps['lectures'],
+            'TASKS_DONE_PERIOD'         => (int)$ps['tasks'],
+            'HABITS_DONE_PERIOD'        => (int)$ps['habits'],
+            'STEPS_CONFIRMED_PERIOD'    => (int)$ps['steps'],
+            'EVENTS_VISITED_PERIOD'     => (int)$ps['events_visited'],
+            'EVENTS_CONFIRMED_PERIOD'   => (int)$ps['events_confirmed'],
         ];
     }
 

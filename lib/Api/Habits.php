@@ -202,20 +202,30 @@ class Habits
 
         $doneToday = $completionsToday + 1;
 
-        // Если норма на сегодня выполнена:
-        //   • блокируем дальнейшие напоминания;
-        //   • начисляем награду.
+        // ─── Награда (только при достижении нормы) ───
+        // ИЗМЕНЕНО: результат awardHabit используется для REWARD_POINTS в ответе.
+        // Поле отдаём ТОЛЬКО при added === true — чтобы повторный вызов
+        // (например, при гонке двух параллельных запросов) не показал клиенту
+        // «+N» второй раз. already === true означает, что награда уже была
+        // начислена ранее за этот (habitId, localDate) — баланс не меняем.
+        $rewardPoints = 0;
+
         if ($doneToday >= $timesPerDay) {
             $hint = isset($habitCfg['timesPerDayHint'])
                 ? (int)$habitCfg['timesPerDayHint']
                 : 1;
             Storage::markHabitDayDone($uid, $id, $userLocalDate, $hint);
-            RewardsBuilder::awardHabit($uid, $habitCfg, $doneToday, $userLocalDate);
+
+            $awardRes = RewardsBuilder::awardHabit($uid, $habitCfg, $doneToday, $userLocalDate);
+
+            if (!empty($awardRes['added'])) {
+                $rewardPoints = (int)($awardRes['points'] ?? 0);
+            }
         }
 
         Storage::touchBindingByUid($uid);
 
-        return [
+        $response = [
             'RESULT'          => 'OK',
             'HABIT_ID'        => $id,
             'DONE_TODAY'      => $doneToday,
@@ -224,6 +234,13 @@ class Habits
             'CAN_COMPLETE'    => $doneToday < $timesPerDay,
             'SERVER_DATETIME' => $t->format('Y-m-d\TH:i:s\Z'),
         ];
+
+        // Поле присутствует, только если награда реально начислена
+        if ($rewardPoints > 0) {
+            $response['REWARD_POINTS'] = $rewardPoints;
+        }
+
+        return $response;
     }
 
     private static function toServerMs($dt): int

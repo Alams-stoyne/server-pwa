@@ -30,6 +30,13 @@ class Reads
         //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
         //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты
         // Legacy-формат "lecture-theme:YYYY-MM-DD:xyz" не парсится — награда не начисляется.
+        //
+        // ИЗМЕНЕНО: результат awardLecture сохраняется в $rewardPoints и
+        // попадает в ответ как REWARD_POINTS — ТОЛЬКО когда награда
+        // реально начислена (added === true). При повторном чтении
+        // (added === false / already === true) поля в ответе не будет.
+        $rewardPoints = 0;
+
         try {
             if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $id, $m)) {
                 $elementId = (int)$m[1];
@@ -53,6 +60,10 @@ class Reads
                         (string)$info['date'],
                         $localDate
                     );
+
+                    if (!empty($res['added'])) {
+                        $rewardPoints = (int)($res['points'] ?? 0);
+                    }
 
                     \Bitrix\Main\Diag\Debug::writeToFile(
                         sprintf(
@@ -85,10 +96,17 @@ class Reads
             );
         }
 
-        return [
+        $response = [
             'RESULT'          => 'OK',
             'ID_READ'         => (int)(microtime(true) * 1000),
             'SERVER_DATETIME' => Storage::now()->format('Y-m-d\TH:i:s\Z'),
         ];
+
+        // Поле присутствует только если награда реально начислена
+        if ($rewardPoints > 0) {
+            $response['REWARD_POINTS'] = $rewardPoints;
+        }
+
+        return $response;
     }
 }

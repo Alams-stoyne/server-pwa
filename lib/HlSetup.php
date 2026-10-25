@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 16;
+        return 17;
     }
 
     public static function config(): array
@@ -45,6 +45,12 @@ class HlSetup
                     'UF_EFFICIENCY_ALL'    => ['double', []],
                     'UF_EFFICIENCY_DAY'    => ['double', []],
                     'UF_HABITS_DAYS'       => ['integer', []],
+                    // ← v17: абсолютные значения для эффективности
+                    'UF_EARNED_ALL'        => ['integer', []],
+                    'UF_MAX_ALL'           => ['integer', []],
+                    'UF_MISSING_ALL'       => ['integer', []],
+                    'UF_EARNED_DAY'        => ['integer', []],
+                    'UF_MAX_DAY'           => ['integer', []],
                 ],
             ],
             'UserStates' => [
@@ -242,9 +248,6 @@ class HlSetup
                     'UF_CREATED_AT'  => ['datetime', []],
                 ],
             ],
-            // Кеш максимума яблок по датам в разрезе направлений.
-            // BASE — общие для всех (charging + general_lectures + events + reflection + steps),
-            // THEMES — по каждому направлению (theme_lectures + tasks).
             'DailyApples' => [
                 'name'  => 'X5PwaDailyApples',
                 'table' => 'x5_pwa_daily_apples',
@@ -297,10 +300,6 @@ class HlSetup
         }
     }
 
-    /**
-     * Удаляет устаревший HL X5PwaDailyMax (v14–v15).
-     * В v16 вместо него — X5PwaDailyApples с разбивкой по направлениям.
-     */
     private static function dropLegacyDailyMax(): void
     {
         try {
@@ -405,6 +404,9 @@ class HlSetup
                 'idx_x5pwa_bindings_eff_day'     => 'UF_EFFICIENCY_DAY',
                 'idx_x5pwa_bindings_comp_eff'    => 'UF_WORKPLACE, UF_EFFICIENCY_ALL',
                 'idx_x5pwa_bindings_last_seen'   => 'UF_LAST_SEEN_AT',
+                // v17
+                'idx_x5pwa_bindings_earned'      => 'UF_EARNED_ALL',
+                'idx_x5pwa_bindings_missing'     => 'UF_MISSING_ALL',
             ],
             'x5_pwa_steps' => [
                 'idx_x5pwa_steps_uid_status'  => 'UF_UID, UF_STATUS',
@@ -447,7 +449,6 @@ class HlSetup
                 'idx_x5pwa_reward_date'    => 'UF_LOCAL_DATE',
             ],
             'x5_pwa_daily_apples' => [
-                // Уникальная пара (дата, направление) — гарантирует одну строку на корзину
                 'uniq_x5pwa_dailyapples_dt' => 'unique:UF_DATE, UF_THEME_CODE',
                 'idx_x5pwa_dailyapples_date' => 'UF_DATE',
             ],

@@ -190,8 +190,12 @@ class Dumper
             self::log(sprintf('RAW %s: count=%d', $bucket, count($items)));
         }
 
+        // ← ИЗМЕНЕНО: fallback на хардкод только если IB «Направления» не настроен.
+        // Если IB настроен, но все темы деактивированы — работаем с пустым списком
+        // (в дамп пойдут только general/charging, а темы будут только «исторические»
+        // из $extraThemesLectures/$extraThemesTasks — это осознанно, см. ниже).
         $themes = ThemesResolver::getAllCodes();
-        if (!$themes) {
+        if (!$themes && !ThemesResolver::isConfigured()) {
             $themes = ['energy', 'antistress', 'body', 'balance'];
         }
         $today = date('Y-m-d');

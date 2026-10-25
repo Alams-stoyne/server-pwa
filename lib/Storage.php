@@ -428,6 +428,14 @@ class Storage
             'CREATED_AT'=> 'UF_CREATED_AT',
             'last_seen' => 'UF_LAST_SEEN_AT',
             'LAST_SEEN_AT' => 'UF_LAST_SEEN_AT',
+            'eff_all'    => 'UF_EFFICIENCY_ALL',
+            'EFFICIENCY_ALL' => 'UF_EFFICIENCY_ALL',
+            'eff_day'    => 'UF_EFFICIENCY_DAY',
+            'EFFICIENCY_DAY' => 'UF_EFFICIENCY_DAY',
+            'earned'     => 'UF_EARNED_ALL',
+            'EARNED_ALL' => 'UF_EARNED_ALL',
+            'missing'    => 'UF_MISSING_ALL',
+            'MISSING_ALL'=> 'UF_MISSING_ALL',
         ];
         $sortKey   = (string)($params['sort'] ?? 'LAST_SEEN_AT');
         $sortField = $sortMap[$sortKey] ?? 'UF_LAST_SEEN_AT';
@@ -480,6 +488,9 @@ class Storage
         return $row ?: null;
     }
 
+    /**
+     * Total-метрики за всё время (legacy). Оставлен для обратной совместимости.
+     */
     public static function getStatsForUids(array $uids): array
     {
         if (!$uids) return [];
@@ -513,6 +524,156 @@ class Storage
         }
 
         return $out;
+    }
+
+    /**
+     * Количественные метрики активности за период (все действия: лекции, задания,
+     * привычки, шаги, события). 5 SQL-запросов с GROUP BY.
+     *
+     * Семантика периода:
+     *   • лекции/задания/привычки/события — по серверному datetime (UF_*_AT);
+     *   • шаги — по локальной дате пользователя (UF_LOCAL_DATE), только 'Y'.
+     *
+     * @return array<string, array{
+     *   lectures:int, tasks:int, habits:int, steps:int,
+     *   events_visited:int, events_confirmed:int
+     * }>
+     */
+    public static function getPeriodStatsForUids(array $uids, string $from, string $to): array
+    {
+        if (!$uids) return [];
+
+        $from = trim($from);
+        $to   = trim($to);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)
+            || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)
+            || $from > $to) {
+            // fallback: без периода (total) — чтобы не падать
+            $total = self::getStatsForUids($uids);
+            $out = [];
+            foreach ($uids as $u) {
+                $t = $total[$u] ?? ['lectures' => 0, 'tasks' => 0, 'habits' => 0];
+                $out[$u] = [
+                    'lectures' => $t['lectures'], 'tasks' => $t['tasks'], 'habits' => $t['habits'],
+                    'steps' => 0, 'events_visited' => 0, 'events_confirmed' => 0,
+                ];
+            }
+            return $out;
+        }
+
+        $out = [];
+        foreach ($uids as $u) {
+            $out[(string)$u] = [
+                'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+                'events_visited' => 0, 'events_confirmed' => 0,
+            ];
+        }
+
+        $conn      = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+
+        $uidsSafe = array_map([$sqlHelper, 'forSql'], $uids);
+        $inList   = "'" . implode("','", $uidsSafe) . "'";
+
+        $fromDtSafe  = $sqlHelper->forSql($from . ' 00:00:00');
+        $toDtSafe    = $sqlHelper->forSql($to   . ' 23:59:59');
+        $fromDaySafe = $sqlHelper->forSql($from);
+        $toDaySafe   = $sqlHelper->forSql($to);
+
+        // 1. Лекции
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID, COUNT(*) AS C
+                 FROM x5_pwa_lecture_reads
+                 WHERE UF_UID IN ({$inList})
+                   AND UF_READ_AT >= '{$fromDtSafe}'
+                   AND UF_READ_AT <= '{$toDtSafe}'
+                 GROUP BY UF_UID"
+            )->fetchAll();
+            foreach ($rows as $r) {
+                $uid = (string)$r['UF_UID'];
+                if (isset($out[$uid])) $out[$uid]['lectures'] = (int)$r['C'];
+            }
+        } catch (\Throwable $e) {}
+
+        // 2. Задания
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID, COUNT(*) AS C
+                 FROM x5_pwa_task_completions
+                 WHERE UF_UID IN ({$inList})
+                   AND UF_COMPLETED_AT >= '{$fromDtSafe}'
+                   AND UF_COMPLETED_AT <= '{$toDtSafe}'
+                 GROUP BY UF_UID"
+            )->fetchAll();
+            foreach ($rows as $r) {
+                $uid = (string)$r['UF_UID'];
+                if (isset($out[$uid])) $out[$uid]['tasks'] = (int)$r['C'];
+            }
+        } catch (\Throwable $e) {}
+
+        // 3. Привычки
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID, COUNT(*) AS C
+                 FROM x5_pwa_habit_logs
+                 WHERE UF_UID IN ({$inList})
+                   AND UF_COMPLETED_AT >= '{$fromDtSafe}'
+                   AND UF_COMPLETED_AT <= '{$toDtSafe}'
+                 GROUP BY UF_UID"
+            )->fetchAll();
+            foreach ($rows as $r) {
+                $uid = (string)$r['UF_UID'];
+                if (isset($out[$uid])) $out[$uid]['habits'] = (int)$r['C'];
+            }
+        } catch (\Throwable $e) {}
+
+        // 4. Шаги (подтверждённые, по локальной дате пользователя)
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID, COALESCE(SUM(UF_STEPS), 0) AS S
+                 FROM x5_pwa_steps
+                 WHERE UF_UID IN ({$inList})
+                   AND UF_STATUS = 'Y'
+                   AND UF_LOCAL_DATE >= '{$fromDaySafe}'
+                   AND UF_LOCAL_DATE <= '{$toDaySafe}'
+                 GROUP BY UF_UID"
+            )->fetchAll();
+            foreach ($rows as $r) {
+                $uid = (string)$r['UF_UID'];
+                if (isset($out[$uid])) $out[$uid]['steps'] = (int)$r['S'];
+            }
+        } catch (\Throwable $e) {}
+
+        // 5. События (клик и подтверждение в окне периода)
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID,
+                        SUM(CASE WHEN UF_CLICKED_AT   >= '{$fromDtSafe}' AND UF_CLICKED_AT   <= '{$toDtSafe}' THEN 1 ELSE 0 END) AS V,
+                        SUM(CASE WHEN UF_CONFIRMED_AT >= '{$fromDtSafe}' AND UF_CONFIRMED_AT <= '{$toDtSafe}' THEN 1 ELSE 0 END) AS CC
+                 FROM x5_pwa_event_actions
+                 WHERE UF_UID IN ({$inList})
+                 GROUP BY UF_UID"
+            )->fetchAll();
+            foreach ($rows as $r) {
+                $uid = (string)$r['UF_UID'];
+                if (isset($out[$uid])) {
+                    $out[$uid]['events_visited']   = (int)$r['V'];
+                    $out[$uid]['events_confirmed'] = (int)$r['CC'];
+                }
+            }
+        } catch (\Throwable $e) {}
+
+        return $out;
+    }
+
+    public static function getPeriodStatsForUid(string $uid, string $from, string $to): array
+    {
+        $all = self::getPeriodStatsForUids([$uid], $from, $to);
+        return $all[$uid] ?? [
+            'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+            'events_visited' => 0, 'events_confirmed' => 0,
+        ];
     }
 
     public static function getSubscriptionsForUids(array $uids): array
@@ -956,7 +1117,7 @@ class Storage
     public static function setRateBucket(string $key, array $timestamps): void
     {
         $dc = self::dataClass('X5PwaRateLimits');
-        $row = $dc::getList(['filter' => ['=UF_KEY' => $key], 'limit' => 1])->fetch();
+        $row = $dc->getList(['filter' => ['=UF_KEY' => $key], 'limit' => 1])->fetch();
         $value = json_encode(array_values($timestamps));
         if ($row) $dc::update($row['ID'], ['UF_TIMESTAMPS' => $value]);
         else $dc::add(['UF_KEY' => $key, 'UF_TIMESTAMPS' => $value]);
@@ -1396,7 +1557,7 @@ class Storage
         ];
     }
 
-    // ───────── DailyApples (кеш максимума яблок по дате + направлению) ─────────
+    // ───────── DailyApples ─────────
 
     /**
      * @return array{BASE:int,THEMES:array<string,int>}|null
@@ -1595,6 +1756,9 @@ class Storage
                     'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED',
                     'UF_CREATED_AT', 'UF_TOTAL_STEPS', 'UF_LAST_SEEN_AT',
                     'UF_HABIT_ID', 'UF_REWARD_BALANCE', 'UF_BLOCKED',
+                    'UF_EARNED_ALL', 'UF_MAX_ALL', 'UF_MISSING_ALL',
+                    'UF_EARNED_DAY', 'UF_MAX_DAY',
+                    'UF_EFFICIENCY_ALL', 'UF_EFFICIENCY_DAY',
                 ],
                 'filter' => ['=UF_UID' => $uids],
             ])->fetchAll();
@@ -1613,6 +1777,13 @@ class Storage
                     'habit_id'        => trim((string)($r['UF_HABIT_ID'] ?? '')),
                     'reward_balance'  => (int)($r['UF_REWARD_BALANCE'] ?? 0),
                     'blocked'         => ($r['UF_BLOCKED'] ?? 'N') === 'Y',
+                    'earned_all'      => (int)($r['UF_EARNED_ALL'] ?? 0),
+                    'max_all'         => (int)($r['UF_MAX_ALL'] ?? 0),
+                    'missing_all'     => (int)($r['UF_MISSING_ALL'] ?? 0),
+                    'earned_day'      => (int)($r['UF_EARNED_DAY'] ?? 0),
+                    'max_day'         => (int)($r['UF_MAX_DAY'] ?? 0),
+                    'eff_all'         => (float)($r['UF_EFFICIENCY_ALL'] ?? 0),
+                    'eff_day'         => (float)($r['UF_EFFICIENCY_DAY'] ?? 0),
                 ];
             }
             return $out;
@@ -1630,20 +1801,30 @@ class Storage
 
         foreach (array_chunk($rows, 100, true) as $chunk) {
             try {
-                $casesRank = [];
-                $casesAll  = [];
-                $casesDay  = [];
-                $casesHab  = [];
-                $uidsSafe  = [];
+                $casesRank    = [];
+                $casesAll     = [];
+                $casesDay     = [];
+                $casesHab     = [];
+                $casesEarnAll = [];
+                $casesMaxAll  = [];
+                $casesMissAll = [];
+                $casesEarnDay = [];
+                $casesMaxDay  = [];
+                $uidsSafe     = [];
 
                 foreach ($chunk as $uid => $v) {
                     $safe = $sqlHelper->forSql($uid);
                     $uidsSafe[] = "'{$safe}'";
 
-                    $casesRank[] = "WHEN '{$safe}' THEN " . (int)$v['rank'];
-                    $casesAll[]  = "WHEN '{$safe}' THEN " . (float)$v['eff_all'];
-                    $casesDay[]  = "WHEN '{$safe}' THEN " . (float)$v['eff_day'];
-                    $casesHab[]  = "WHEN '{$safe}' THEN " . (int)$v['habits_days'];
+                    $casesRank[]    = "WHEN '{$safe}' THEN " . (int)$v['rank'];
+                    $casesAll[]     = "WHEN '{$safe}' THEN " . (float)$v['eff_all'];
+                    $casesDay[]     = "WHEN '{$safe}' THEN " . (float)$v['eff_day'];
+                    $casesHab[]     = "WHEN '{$safe}' THEN " . (int)$v['habits_days'];
+                    $casesEarnAll[] = "WHEN '{$safe}' THEN " . (int)($v['earned_all'] ?? 0);
+                    $casesMaxAll[]  = "WHEN '{$safe}' THEN " . (int)($v['max_all'] ?? 0);
+                    $casesMissAll[] = "WHEN '{$safe}' THEN " . (int)($v['missing_all'] ?? 0);
+                    $casesEarnDay[] = "WHEN '{$safe}' THEN " . (int)($v['earned_day'] ?? 0);
+                    $casesMaxDay[]  = "WHEN '{$safe}' THEN " . (int)($v['max_day'] ?? 0);
                 }
 
                 $inSql = implode(',', $uidsSafe);
@@ -1652,7 +1833,12 @@ class Storage
                             UF_RANK = CASE UF_UID " . implode(' ', $casesRank) . " ELSE UF_RANK END,
                             UF_EFFICIENCY_ALL = CASE UF_UID " . implode(' ', $casesAll) . " ELSE UF_EFFICIENCY_ALL END,
                             UF_EFFICIENCY_DAY = CASE UF_UID " . implode(' ', $casesDay) . " ELSE UF_EFFICIENCY_DAY END,
-                            UF_HABITS_DAYS = CASE UF_UID " . implode(' ', $casesHab) . " ELSE UF_HABITS_DAYS END
+                            UF_HABITS_DAYS = CASE UF_UID " . implode(' ', $casesHab) . " ELSE UF_HABITS_DAYS END,
+                            UF_EARNED_ALL = CASE UF_UID " . implode(' ', $casesEarnAll) . " ELSE UF_EARNED_ALL END,
+                            UF_MAX_ALL = CASE UF_UID " . implode(' ', $casesMaxAll) . " ELSE UF_MAX_ALL END,
+                            UF_MISSING_ALL = CASE UF_UID " . implode(' ', $casesMissAll) . " ELSE UF_MISSING_ALL END,
+                            UF_EARNED_DAY = CASE UF_UID " . implode(' ', $casesEarnDay) . " ELSE UF_EARNED_DAY END,
+                            UF_MAX_DAY = CASE UF_UID " . implode(' ', $casesMaxDay) . " ELSE UF_MAX_DAY END
                         WHERE UF_UID IN ({$inSql})";
 
                 $conn->queryExecute($sql);
@@ -1675,6 +1861,8 @@ class Storage
                     'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED', 'UF_BLOCKED',
                     'UF_TOTAL_STEPS', 'UF_REWARD_BALANCE',
                     'UF_RANK', 'UF_EFFICIENCY_ALL', 'UF_EFFICIENCY_DAY', 'UF_HABITS_DAYS',
+                    'UF_EARNED_ALL', 'UF_MAX_ALL', 'UF_MISSING_ALL',
+                    'UF_EARNED_DAY', 'UF_MAX_DAY',
                 ],
                 'filter' => ['=UF_UID' => $uid],
                 'limit'  => 1,
@@ -1693,6 +1881,11 @@ class Storage
                 'eff_all'         => (float)($row['UF_EFFICIENCY_ALL'] ?? 0),
                 'eff_day'         => (float)($row['UF_EFFICIENCY_DAY'] ?? 0),
                 'habits_days'     => (int)($row['UF_HABITS_DAYS'] ?? 0),
+                'earned_all'      => (int)($row['UF_EARNED_ALL'] ?? 0),
+                'max_all'         => (int)($row['UF_MAX_ALL'] ?? 0),
+                'missing_all'     => (int)($row['UF_MISSING_ALL'] ?? 0),
+                'earned_day'      => (int)($row['UF_EARNED_DAY'] ?? 0),
+                'max_day'         => (int)($row['UF_MAX_DAY'] ?? 0),
             ];
         } catch (\Throwable $e) {
             return null;

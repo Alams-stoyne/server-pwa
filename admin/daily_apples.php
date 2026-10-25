@@ -1,6 +1,7 @@
 <?php
 /**
  * PWA — Максимум яблок по дням.
+ * Учитываются только активные направления (темы) — фильтр в ThemesResolver.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -11,6 +12,7 @@ use X5\Pwa\Settings;
 use X5\Pwa\StatsBuilder;
 use X5\Pwa\Storage;
 use X5\Pwa\ThemesResolver;
+use X5\Pwa\HabitsBuilder;
 
 $moduleId   = 'x5.pwa';
 $MODULE_RIGHT = $APPLICATION->GetGroupRight($moduleId);
@@ -100,20 +102,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()) {
 }
 
 // ── Данные ──
-$themes = ThemesResolver::getAllCodes();
-if (!$themes) $themes = ['energy', 'antistress', 'body', 'balance'];
+$themes           = ThemesResolver::getAllCodes();
+$themesConfigured = ThemesResolver::isConfigured();
+$noActiveThemes   = $themesConfigured && !$themes;
 
+// Названия тем — из ThemesBuilder (включая деактивированные, чтобы
+// корректно подписывать старые коды из кэша). Для $themes выше — только активные.
 $themeTitles = [];
-foreach (\X5\Pwa\ThemesBuilder::getAll() as $t) {
-    $themeTitles[(string)$t['id']] = (string)$t['name'];
-}
+try {
+    foreach (\X5\Pwa\ThemesBuilder::getAll() as $t) {
+        $code = (string)($t['id'] ?? '');
+        if ($code !== '') {
+            $themeTitles[$code] = (string)($t['name'] ?? $code);
+        }
+    }
+} catch (\Throwable $e) {}
+
+// ── Верхняя граница вклада привычки одного пользователя за день ──
+$habitMaxPerDay = 0;
+try {
+    $habits = HabitsBuilder::getAll();
+    foreach ($habits as $habit) {
+        $points = (int)($habit['rewardPoints'] ?? 0);
+        $times  = max(1, (int)($habit['timesPerDay'] ?? 1));
+        $max    = $points * $times;
+        if ($max > $habitMaxPerDay) $habitMaxPerDay = $max;
+    }
+} catch (\Throwable $e) {}
 
 $rows = [];
 $cursor = strtotime($from);
 $endTs  = strtotime($to);
 $totals = [
-    'BASE'   => 0,
-    'THEMES' => array_fill_keys($themes, 0),
+    'BASE'      => 0,
+    'THEMES'    => array_fill_keys($themes, 0),
+    'MAX_THEME' => 0,
+    'CEILING'   => 0,
 ];
 
 if ($cursor !== false && $endTs !== false) {
@@ -127,22 +151,41 @@ if ($cursor !== false && $endTs !== false) {
             $source = 'расчёт';
         }
 
-        $row = [
-            'DATE'   => $d,
-            'BASE'   => (int)($cached['BASE'] ?? 0),
-            'THEMES' => [],
-            'SOURCE' => $source,
+        $themeValues = [];
+        foreach ($themes as $code) {
+            $themeValues[$code] = (int)($cached['THEMES'][$code] ?? 0);
+        }
+
+        $maxTheme     = 0;
+        $maxThemeCode = null;
+        foreach ($themeValues as $code => $v) {
+            if ($maxThemeCode === null || $v > $maxTheme) {
+                $maxTheme = $v;
+                $maxThemeCode = $code;
+            }
+        }
+
+        $base    = (int)($cached['BASE'] ?? 0);
+        $ceiling = $base + $maxTheme + $habitMaxPerDay;
+
+        $rows[] = [
+            'DATE'           => $d,
+            'BASE'           => $base,
+            'THEMES'         => $themeValues,
+            'SOURCE'         => $source,
+            'HABIT'          => $habitMaxPerDay,
+            'MAX_THEME'      => $maxTheme,
+            'MAX_THEME_CODE' => $maxThemeCode,
+            'CEILING'        => $ceiling,
         ];
+
+        $totals['BASE']      += $base;
+        $totals['MAX_THEME'] += $maxTheme;
+        $totals['CEILING']   += $ceiling;
         foreach ($themes as $code) {
-            $row['THEMES'][$code] = (int)($cached['THEMES'][$code] ?? 0);
+            $totals['THEMES'][$code] += $themeValues[$code];
         }
 
-        $totals['BASE'] += $row['BASE'];
-        foreach ($themes as $code) {
-            $totals['THEMES'][$code] += $row['THEMES'][$code];
-        }
-
-        $rows[] = $row;
         $cursor = strtotime('+1 day', $cursor);
     }
 }
@@ -150,9 +193,6 @@ if ($cursor !== false && $endTs !== false) {
 // ── Детализация на дату ──
 
 /**
- * Прямой фильтр по DATE_ACTIVE_FROM (формат даты сайта, SHORT).
- * См. комментарий в StatsBuilder::sumRewardPointsForDate.
- *
  * @return array{count:int,sum:int}
  */
 function countIblockForDate(int $iblockId, string $date): array
@@ -243,15 +283,18 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
     .x5da-table th { text-align:left; padding:8px 10px; border-bottom:2px solid #e2e5e9; background:#f8f9fa; font-size:11px; font-weight:600; color:#555; }
     .x5da-table td { padding:6px 10px; border-bottom:1px solid #eee; font-size:12px; font-family:monospace; }
     .x5da-table tr:hover td { background:#f8f9fa; }
-    .x5da-base { font-weight:600; color:#1e6bcc; }
-    .x5da-theme { color:#3a7d1c; }
-    .x5da-total { font-weight:600; color:#2c3e50; }
+    .x5da-base    { font-weight:600; color:#1e6bcc; }
+    .x5da-theme   { color:#3a7d1c; }
+    .x5da-habit   { color:#8e44ad; font-weight:600; }
+    .x5da-max     { color:#d35400; font-weight:600; }
+    .x5da-ceiling { color:#c0392b; font-weight:700; }
     .x5da-badge-cache   { background:#e6f5d8; color:#3a7d1c; padding:1px 6px; border-radius:8px; font-size:10px; }
     .x5da-badge-calc    { background:#fff4e0; color:#a52020; padding:1px 6px; border-radius:8px; font-size:10px; }
     .x5da-form { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
     .x5da-form label { display:flex; flex-direction:column; font-size:12px; color:#666; gap:4px; }
     .x5da-form input[type=date] { padding:6px 8px; border:1px solid #c5c9cf; border-radius:3px; }
     .x5da-legend { font-size:11px; color:#666; margin-top:8px; }
+    .x5da-code { color:#888; font-size:10px; margin-left:4px; }
 </style>
 
 <div style="margin-bottom:12px">
@@ -266,6 +309,24 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
 <?php if ($error): ?>
     <div class="adm-info-message-wrap adm-info-message-red">
         <div class="adm-info-message"><?= htmlspecialcharsbx($error) ?></div>
+    </div>
+<?php endif ?>
+<?php if ($noActiveThemes): ?>
+    <div class="adm-info-message-wrap adm-info-message-yellow">
+        <div class="adm-info-message">
+            <b>Нет активных направлений.</b>
+            В ИБ «Направления» есть элементы, но ни у одного не установлен флаг активности.
+            В таблице ниже остались только BASE, Habit (max) и потолок BASE + Habit (max).
+            Активируйте нужные направления — колонки появятся автоматически.
+        </div>
+    </div>
+<?php elseif (!$themesConfigured): ?>
+    <div class="adm-info-message-wrap adm-info-message-yellow">
+        <div class="adm-info-message">
+            <b>ИБ «Направления» не настроен.</b>
+            В настройках модуля не указан IBLOCK_ID для «Направления» — темы не учитываются.
+            Проверьте «Настройки модуля» → соответствующий пункт.
+        </div>
     </div>
 <?php endif ?>
 
@@ -334,25 +395,28 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
                         <?php foreach ($themes as $code): ?>
                             <th><?= htmlspecialcharsbx($themeTitles[$code] ?? $code) ?></th>
                         <?php endforeach ?>
-                        <th>Итого (без привычки)</th>
+                        <th>Habit (max)</th>
+                        <th>MAX (тема)</th>
+                        <th>Потолок с привычкой</th>
                         <th>Источник</th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php foreach ($rows as $row): ?>
-                        <?php
-                        $totalWithThemes = $row['BASE'];
-                        foreach ($themes as $code) {
-                            $totalWithThemes += $row['THEMES'][$code];
-                        }
-                        ?>
                         <tr>
                             <td><b><?= htmlspecialcharsbx($row['DATE']) ?></b></td>
                             <td class="x5da-base"><?= (int)$row['BASE'] ?></td>
                             <?php foreach ($themes as $code): ?>
                                 <td class="x5da-theme"><?= (int)$row['THEMES'][$code] ?></td>
                             <?php endforeach ?>
-                            <td class="x5da-total"><?= (int)$totalWithThemes ?></td>
+                            <td class="x5da-habit"><?= (int)$row['HABIT'] ?></td>
+                            <td class="x5da-max">
+                                <?= (int)$row['MAX_THEME'] ?>
+                                <?php if ($row['MAX_THEME_CODE'] !== null && isset($themeTitles[$row['MAX_THEME_CODE']])): ?>
+                                    <span class="x5da-code">(<?= htmlspecialcharsbx($themeTitles[$row['MAX_THEME_CODE']]) ?>)</span>
+                                <?php endif ?>
+                            </td>
+                            <td class="x5da-ceiling"><?= (int)$row['CEILING'] ?></td>
                             <td>
                                 <?php if ($row['SOURCE'] === 'кеш'): ?>
                                     <span class="x5da-badge-cache">кеш</span>
@@ -370,9 +434,9 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
                         <?php foreach ($themes as $code): ?>
                             <td class="x5da-theme"><?= (int)$totals['THEMES'][$code] ?></td>
                         <?php endforeach ?>
-                        <td class="x5da-total">
-                            <?= (int)($totals['BASE'] + array_sum($totals['THEMES'])) ?>
-                        </td>
+                        <td class="x5da-habit"><?= (int)$habitMaxPerDay ?></td>
+                        <td class="x5da-max"><?= (int)$totals['MAX_THEME'] ?></td>
+                        <td class="x5da-ceiling"><?= (int)$totals['CEILING'] ?></td>
                         <td>—</td>
                     </tr>
                 </tfoot>
@@ -381,9 +445,16 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
 
         <div class="x5da-legend">
             <b>BASE</b> = charging + general_lectures + events + reflection + steps (отправка + подтверждение).<br>
-            <b>Направление</b> = theme_lectures (THEME=код) + tasks (THEME=код).<br>
-            <b>MAX пользователя</b> = BASE + направление пользователя + REWARD_POINTS его привычки.
-            Привычка в таблице не показана — она персональная.
+            <b>Направление</b> = theme_lectures (THEME=код) + tasks (THEME=код).
+            В таблице — только <b>активные</b> направления.<br>
+            <b>Habit (max)</b> = верхняя граница вклада привычки одного пользователя за день
+            (<code>rewardPoints × timesPerDay</code> по самой «дорогой» привычке).<br>
+            <b>MAX (тема)</b> = BASE + максимум по <i>активным</i> направлениям за день —
+            потолок пользователя, у которого самое «жирное» направление.<br>
+            <b>Потолок с привычкой</b> = MAX (тема) + Habit (max) — реальный максимум,
+            который может получить один пользователь за день.<br>
+            <b>Σ период</b> для MAX и Потолка — сумма <i>дневных</i> значений: в разные дни
+            «лучшая» тема может быть разной, поэтому это не равно <code>Σ BASE + max(Σ по темам)</code>.
         </div>
     <?php endif ?>
 </div>
@@ -401,6 +472,9 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
     } catch (\Throwable $e) {}
     $stepsSent     = Settings::rewardStepsSentPoints();
     $stepsApproved = Settings::rewardStepsApprovedPoints();
+
+    $baseLive = (int)($charging['sum'] + $general['sum'] + $events['sum']
+        + $reflPoints + $stepsSent + $stepsApproved);
     ?>
     <table class="x5da-table" style="width:auto">
         <tr>
@@ -433,35 +507,121 @@ function countIblockForDateByTheme(int $iblockId, string $date, string $themeCod
             <td>—</td>
             <td class="x5da-base"><?= (int)$stepsApproved ?></td>
         </tr>
+        <tr>
+            <td>habit (max)</td>
+            <td>—</td>
+            <td class="x5da-habit"><?= (int)$habitMaxPerDay ?></td>
+        </tr>
+        <tr style="background:#f0f2f5">
+            <td><b>BASE (итог)</b></td>
+            <td>—</td>
+            <td class="x5da-base"><b><?= (int)$baseLive ?></b></td>
+        </tr>
     </table>
 
-    <h3 style="margin-top:16px">Детализация по темам на <?= htmlspecialcharsbx($from) ?></h3>
-    <table class="x5da-table" style="width:auto">
-        <thead>
-            <tr>
-                <th>Тема</th>
-                <th>theme_lectures</th>
-                <th>tasks</th>
-                <th>Итого</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php
-            $ibTheme = (int)Settings::iblockId('theme_lectures');
-            $ibTasks = (int)Settings::iblockId('tasks');
-            foreach ($themes as $code):
-                $lectures = countIblockForDateByTheme($ibTheme, $from, $code);
-                $tasks    = countIblockForDateByTheme($ibTasks, $from, $code);
-            ?>
+    <h3 style="margin-top:16px">Детализация по активным темам на <?= htmlspecialcharsbx($from) ?></h3>
+    <?php if (!$themes): ?>
+        <div style="color:#888">
+            <?= $noActiveThemes
+                ? 'Нет активных направлений.'
+                : 'ИБ «Направления» не настроен.' ?>
+        </div>
+    <?php else: ?>
+        <table class="x5da-table" style="width:auto">
+            <thead>
                 <tr>
-                    <td><?= htmlspecialcharsbx($themeTitles[$code] ?? $code) ?></td>
-                    <td><?= (int)$lectures['count'] ?> эл. / <?= (int)$lectures['sum'] ?> ябл.</td>
-                    <td><?= (int)$tasks['count'] ?> эл. / <?= (int)$tasks['sum'] ?> ябл.</td>
-                    <td class="x5da-theme"><?= (int)($lectures['sum'] + $tasks['sum']) ?></td>
+                    <th>Тема</th>
+                    <th>theme_lectures</th>
+                    <th>tasks</th>
+                    <th>Итого</th>
                 </tr>
-            <?php endforeach ?>
-        </tbody>
-    </table>
+            </thead>
+            <tbody>
+                <?php
+                $ibTheme = (int)Settings::iblockId('theme_lectures');
+                $ibTasks = (int)Settings::iblockId('tasks');
+
+                // Считаем суммы один раз — переиспользуем в блоке «Потолок».
+                $themeSums = [];
+                foreach ($themes as $code) {
+                    $lectures = countIblockForDateByTheme($ibTheme, $from, $code);
+                    $tasks    = countIblockForDateByTheme($ibTasks, $from, $code);
+                    $themeSums[$code] = (int)($lectures['sum'] + $tasks['sum']);
+                }
+                foreach ($themes as $code):
+                    $lectures = countIblockForDateByTheme($ibTheme, $from, $code);
+                    $tasks    = countIblockForDateByTheme($ibTasks, $from, $code);
+                ?>
+                    <tr>
+                        <td><?= htmlspecialcharsbx($themeTitles[$code] ?? $code) ?></td>
+                        <td><?= (int)$lectures['count'] ?> эл. / <?= (int)$lectures['sum'] ?> ябл.</td>
+                        <td><?= (int)$tasks['count'] ?> эл. / <?= (int)$tasks['sum'] ?> ябл.</td>
+                        <td class="x5da-theme"><?= (int)$themeSums[$code] ?></td>
+                    </tr>
+                <?php endforeach ?>
+            </tbody>
+        </table>
+
+        <h3 style="margin-top:16px">Потолок пользователя по активным направлениям на <?= htmlspecialcharsbx($from) ?></h3>
+        <table class="x5da-table" style="width:auto">
+            <thead>
+                <tr>
+                    <th>Направление</th>
+                    <th>BASE</th>
+                    <th>+ тема</th>
+                    <th>+ habit (max)</th>
+                    <th>= Потолок</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php
+                $bestCode  = null;
+                $worstCode = null;
+                foreach ($themeSums as $code => $sum) {
+                    if ($bestCode  === null || $sum > $themeSums[$bestCode])  $bestCode  = $code;
+                    if ($worstCode === null || $sum < $themeSums[$worstCode]) $worstCode = $code;
+                }
+
+                foreach ($themes as $code):
+                    $themeSum = $themeSums[$code];
+                    $ceiling  = (int)($baseLive + $themeSum + $habitMaxPerDay);
+                ?>
+                    <tr>
+                        <td><?= htmlspecialcharsbx($themeTitles[$code] ?? $code) ?></td>
+                        <td class="x5da-base"><?= (int)$baseLive ?></td>
+                        <td class="x5da-theme"><?= (int)$themeSum ?></td>
+                        <td class="x5da-habit"><?= (int)$habitMaxPerDay ?></td>
+                        <td class="x5da-ceiling"><?= (int)$ceiling ?></td>
+                    </tr>
+                <?php endforeach ?>
+            </tbody>
+        </table>
+
+        <div class="x5da-legend">
+            Потолок считается по <i>свежим</i> данным ИБ (не из кэша), чтобы администратор видел
+            актуальную картину, даже если кэш ещё не пересчитан.
+            Если у пользователя нет привычки — его реальный потолок будет ниже на <b>habit (max)</b>.
+            <?php if ($bestCode !== null && $worstCode !== null): ?>
+                <br>
+                <br>
+                <b>Пример для <?= htmlspecialcharsbx($from) ?>:</b>
+                BASE = <b><?= (int)$baseLive ?></b>,
+                habit (max) = <b><?= (int)$habitMaxPerDay ?></b>.
+                <?php if ($bestCode === $worstCode): ?>
+                    Потолок для «<?= htmlspecialcharsbx($themeTitles[$bestCode] ?? $bestCode) ?>»
+                    = <?= (int)$baseLive ?> + <?= (int)$themeSums[$bestCode] ?> + <?= (int)$habitMaxPerDay ?>
+                    = <b><?= (int)($baseLive + $themeSums[$bestCode] + $habitMaxPerDay) ?></b>.
+                <?php else: ?>
+                    Максимум — для «<?= htmlspecialcharsbx($themeTitles[$bestCode] ?? $bestCode) ?>»:
+                    <?= (int)$baseLive ?> + <?= (int)$themeSums[$bestCode] ?> + <?= (int)$habitMaxPerDay ?>
+                    = <b><?= (int)($baseLive + $themeSums[$bestCode] + $habitMaxPerDay) ?></b>;
+                    минимум — для «<?= htmlspecialcharsbx($themeTitles[$worstCode] ?? $worstCode) ?>»:
+                    <?= (int)$baseLive ?> + <?= (int)$themeSums[$worstCode] ?> + <?= (int)$habitMaxPerDay ?>
+                    = <b><?= (int)($baseLive + $themeSums[$worstCode] + $habitMaxPerDay) ?></b>.
+                <?php endif ?>
+            <?php endif ?>
+        </div>
+    <?php endif ?>
 </div>
 
 <?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php'; ?>

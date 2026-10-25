@@ -1,6 +1,7 @@
 <?php
 /**
  * Список пользователей PWA (CAdminUiList) с блокировкой и удалением.
+ * С эффективностью: собрано / возможно / недостаёт.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -125,8 +126,7 @@ $withPushRaw = x5pwaFilterValue($arFilter, 'HAS_SUBSCRIPTION');
 $withPush = in_array($withPushRaw, ['Y', 'N'], true) ? $withPushRaw : '';
 
 // ─────────────────────────────────────────────────────────
-// Размер страницы: SIZEN_1 приходит от навигатора CAdminUiList,
-// GetNavSize() возвращает сохранённое в сессии значение.
+// Размер страницы
 // ─────────────────────────────────────────────────────────
 $perPageDefault = 50;
 
@@ -142,13 +142,12 @@ if ($perPage <= 0) $perPage = $perPageDefault;
 if ($perPage > 500) $perPage = 500;
 
 // ─────────────────────────────────────────────────────────
-// Обработка групповых действий
+// Групповые действия
 // ─────────────────────────────────────────────────────────
 if ($arIDs = $lAdmin->GroupAction()) {
     $action = $lAdmin->GetAction();
 
     if (in_array($action, ['block', 'unblock', 'delete'], true)) {
-        // Если выбрано «все» — собираем UID по фильтру
         if ($lAdmin->IsGroupActionToAll()) {
             $all = \X5\Pwa\StatsBuilder::listUsers([
                 'search'      => $search,
@@ -221,6 +220,16 @@ $params = [
 
 $data = \X5\Pwa\StatsBuilder::listUsers($params);
 
+// Агрегат по текущему фильтру (без пагинации)
+$agg = \X5\Pwa\StatsBuilder::getUsersAggregate([
+    'search'      => $search,
+    'theme'       => $theme,
+    'blocked'     => $blocked,
+    'active_from' => $activeFrom,
+    'active_to'   => $activeTo,
+    'withPush'    => $withPush,
+]);
+
 $dbRes = new CDBResult();
 $dbRes->InitFromArray(array_values($data['rows']));
 
@@ -237,27 +246,52 @@ $lAdmin->SetNavigationParams($rsData, ['nPageSize' => $perPage]);
 // Колонки
 // ─────────────────────────────────────────────────────────
 $arHeader = [
-    ['id' => 'STATUS',           'content' => 'Статус',       'default' => true],
-    ['id' => 'FIO',              'content' => 'Ф.И.О',       'sort' => 'FIO',          'default' => true],
-    ['id' => 'NICKNAME',         'content' => 'Никнейм',      'sort' => 'NICKNAME',     'default' => true],
-    ['id' => 'WORKPLACE',        'content' => 'Место работы', 'sort' => 'WORKPLACE',    'default' => true],
-    ['id' => 'THEME',            'content' => 'Направление',  'sort' => 'THEME',        'default' => true],
-    ['id' => 'LAST_SEEN_AT',     'content' => 'Активность',   'sort' => 'LAST_SEEN_AT', 'default' => true],
-    ['id' => 'HAS_SUBSCRIPTION', 'content' => 'Push',         'default' => true],
-    ['id' => 'LECTURES_READ',    'content' => 'Лекций',       'default' => true],
-    ['id' => 'TASKS_DONE',       'content' => 'Заданий',      'default' => true],
-    ['id' => 'HABITS_DONE',      'content' => 'Привычек',     'default' => true],
-    ['id' => 'UID',              'content' => 'UID',          'sort' => 'UID',          'default' => false],
-    ['id' => 'CREATED_AT',       'content' => 'Создан',       'sort' => 'CREATED_AT',   'default' => false],
+    ['id' => 'STATUS',          'content' => 'Статус',       'default' => true],
+    ['id' => 'FIO',             'content' => 'Ф.И.О',        'sort' => 'FIO',             'default' => true],
+    ['id' => 'NICKNAME',        'content' => 'Никнейм',      'sort' => 'NICKNAME',        'default' => true],
+    ['id' => 'WORKPLACE',       'content' => 'Место работы', 'sort' => 'WORKPLACE',       'default' => true],
+    ['id' => 'THEME',           'content' => 'Направление',  'sort' => 'THEME',           'default' => true],
+    ['id' => 'LAST_SEEN_AT',    'content' => 'Активность',   'sort' => 'LAST_SEEN_AT',    'default' => true],
+    ['id' => 'HAS_SUBSCRIPTION','content' => 'Push',                                        'default' => true],
+    ['id' => 'EFFICIENCY_ALL',  'content' => 'Эффективность','sort' => 'EFFICIENCY_ALL',  'default' => true],
+    ['id' => 'EARNED_ALL',      'content' => 'Собрано',      'sort' => 'EARNED_ALL',      'default' => true],
+    ['id' => 'MISSING_ALL',     'content' => 'Недостаёт',    'sort' => 'MISSING_ALL',     'default' => true],
+    ['id' => 'LECTURES_READ',   'content' => 'Лекций',                                      'default' => true],
+    ['id' => 'TASKS_DONE',      'content' => 'Заданий',                                     'default' => true],
+    ['id' => 'HABITS_DONE',     'content' => 'Привычек',                                    'default' => true],
+    ['id' => 'MAX_ALL',         'content' => 'Возможно',     'sort' => 'EARNED_ALL',      'default' => false],
+    ['id' => 'EFFICIENCY_DAY',  'content' => 'Эфф. сегодня',                                'default' => false],
+    ['id' => 'EARNED_DAY',      'content' => 'Сегодня собрано',                             'default' => false],
+    ['id' => 'MAX_DAY',         'content' => 'Сегодня возможно',                            'default' => false],
+    ['id' => 'REWARD_BALANCE',  'content' => 'Баланс',                                      'default' => false],
+    ['id' => 'UID',             'content' => 'UID',          'sort' => 'UID',             'default' => false],
+    ['id' => 'CREATED_AT',      'content' => 'Создан',       'sort' => 'CREATED_AT',      'default' => false],
 ];
 
 $lAdmin->AddHeaders($arHeader);
+$lAdmin->AddVisibleHeaderColumn('MAX_ALL');
+$lAdmin->AddVisibleHeaderColumn('EFFICIENCY_DAY');
+$lAdmin->AddVisibleHeaderColumn('EARNED_DAY');
+$lAdmin->AddVisibleHeaderColumn('MAX_DAY');
+$lAdmin->AddVisibleHeaderColumn('REWARD_BALANCE');
 $lAdmin->AddVisibleHeaderColumn('UID');
 $lAdmin->AddVisibleHeaderColumn('CREATED_AT');
 
 $formatDate = function (?int $ms): string {
     if (!$ms) return '—';
     return date('d.m.Y H:i', (int)($ms / 1000));
+};
+
+$renderEfficiencyBar = function (float $pct): string {
+    $p = max(0.0, min(100.0, $pct));
+    $color = $p < 30 ? '#e04a4a' : ($p < 70 ? '#f5a623' : '#3a7d1c');
+    $text  = number_format($p, 1, '.', '') . '%';
+    return '<div style="display:flex;align-items:center;gap:8px;min-width:120px">'
+        . '<div style="flex:1;height:6px;background:#e2e5e9;border-radius:3px;overflow:hidden">'
+        . '<div style="width:' . $p . '%;height:100%;background:' . $color . '"></div>'
+        . '</div>'
+        . '<b style="color:' . $color . ';font-family:monospace">' . $text . '</b>'
+        . '</div>';
 };
 
 foreach ($data['rows'] as $u) {
@@ -274,6 +308,14 @@ foreach ($data['rows'] as $u) {
         'LAST_SEEN_AT'     => $formatDate((int)$u['LAST_ACTIVITY_AT']),
         'CREATED_AT'       => $formatDate((int)$u['CREATED_AT']),
         'HAS_SUBSCRIPTION' => $u['HAS_SUBSCRIPTION'] ? 'Y' : 'N',
+        'EFFICIENCY_ALL'   => (float)$u['EFFICIENCY_ALL'],
+        'EFFICIENCY_DAY'   => (float)$u['EFFICIENCY_DAY'],
+        'EARNED_ALL'       => (int)$u['EARNED_ALL'],
+        'MAX_ALL'          => (int)$u['MAX_ALL'],
+        'MISSING_ALL'      => (int)$u['MISSING_ALL'],
+        'EARNED_DAY'       => (int)$u['EARNED_DAY'],
+        'MAX_DAY'          => (int)$u['MAX_DAY'],
+        'REWARD_BALANCE'   => (int)$u['REWARD_BALANCE'],
         'LECTURES_READ'    => (int)$u['LECTURES_READ'],
         'TASKS_DONE'       => (int)$u['TASKS_DONE'],
         'HABITS_DONE'      => (int)$u['HABITS_DONE'],
@@ -307,6 +349,24 @@ foreach ($data['rows'] as $u) {
             : '<span style="color:#a52020">нет</span>');
     $row->AddViewField('UID',
         '<span style="font-family:monospace;font-size:11px">' . htmlspecialcharsbx($uid) . '</span>');
+
+    $row->AddViewField('EFFICIENCY_ALL', $renderEfficiencyBar((float)$u['EFFICIENCY_ALL']));
+    $row->AddViewField('EFFICIENCY_DAY', $renderEfficiencyBar((float)$u['EFFICIENCY_DAY']));
+
+    $row->AddViewField('EARNED_ALL',
+        '<b style="color:#3a7d1c;font-family:monospace">' . (int)$u['EARNED_ALL'] . '</b>');
+    $row->AddViewField('MAX_ALL',
+        '<span style="color:#555;font-family:monospace">' . (int)$u['MAX_ALL'] . '</span>');
+    $row->AddViewField('MISSING_ALL',
+        ((int)$u['MISSING_ALL'] > 0
+            ? '<b style="color:#c0392b;font-family:monospace">−' . (int)$u['MISSING_ALL'] . '</b>'
+            : '<span style="color:#888;font-family:monospace">0</span>'));
+    $row->AddViewField('EARNED_DAY',
+        '<span style="color:#3a7d1c;font-family:monospace">' . (int)$u['EARNED_DAY'] . '</span>');
+    $row->AddViewField('MAX_DAY',
+        '<span style="color:#555;font-family:monospace">' . (int)$u['MAX_DAY'] . '</span>');
+    $row->AddViewField('REWARD_BALANCE',
+        '<b style="font-family:monospace">' . (int)$u['REWARD_BALANCE'] . '</b>');
 
     // Одиночные действия
     $actions = [
@@ -405,6 +465,31 @@ $lAdmin->SetContextMenu([
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php';
 ?>
 
+<div style="background:#fff;padding:14px 18px;border:1px solid #e2e5e9;margin-bottom:14px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
+    <div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase">Всего пользователей</div>
+        <div style="font-size:22px;font-weight:600;color:#2c3e50"><?= (int)$agg['total'] ?></div>
+    </div>
+    <div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase">Собрано за период</div>
+        <div style="font-size:22px;font-weight:600;color:#3a7d1c"><?= number_format((int)$agg['earned_sum'], 0, '', ' ') ?></div>
+    </div>
+    <div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase">Возможно за период</div>
+        <div style="font-size:22px;font-weight:600;color:#555"><?= number_format((int)$agg['max_sum'], 0, '', ' ') ?></div>
+    </div>
+    <div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase">Недостаёт</div>
+        <div style="font-size:22px;font-weight:600;color:#c0392b"><?= number_format((int)$agg['missing_sum'], 0, '', ' ') ?></div>
+    </div>
+    <div>
+        <div style="font-size:11px;color:#666;text-transform:uppercase">Средняя эффективность</div>
+        <div style="font-size:22px;font-weight:600;color:#1e6bcc">
+            <?= number_format((float)$agg['avg_eff'], 1, '.', '') ?>%
+        </div>
+    </div>
+</div>
+
 <script>
     function x5pwaCopyUid(uid) {
         if (navigator.clipboard && window.isSecureContext) {
@@ -423,10 +508,6 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
         }
     }
 
-    /**
-     * Форма списка (CAdminList рендерит её с id = "form_<sTableID>").
-     * Для групповых действий добавляем в неё скрытый input name=action и submit.
-     */
     function x5pwaGetListForm() {
         return document.getElementById('form_<?= \CUtil::JSEscape($sTableID) ?>')
             || document.querySelector('form[name="form_<?= \CUtil::JSEscape($sTableID) ?>"]');
@@ -445,7 +526,6 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
         }
         input.value = action;
 
-        // Проверяем, что есть выбранные чекбоксы
         var checked = form.querySelectorAll('input[name="ID[]"]:checked');
         if (!checked.length) { alert('Выберите хотя бы одного пользователя'); return; }
 
@@ -477,10 +557,6 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
         x5pwaSubmitAction(action);
     }
 
-    /**
-     * Одиночные действия. Отправляем через скрытую форму, чтобы
-     * не мешать основной форме списка.
-     */
     function x5pwaSingleAction(uid, action) {
         var form = document.createElement('form');
         form.method = 'POST';

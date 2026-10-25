@@ -1,6 +1,7 @@
 <?php
 /**
  * Детальная статистика пользователя.
+ * С эффективностью: собрано / возможно / недостаёт.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -58,6 +59,22 @@ function fmt_iso(?string $iso): string
 }
 
 $steps = $stats['STEPS'] ?? [];
+
+// v17: данные эффективности
+$effAll     = (float)($stats['EFFICIENCY_ALL'] ?? 0);
+$effDay     = (float)($stats['EFFICIENCY_DAY'] ?? 0);
+$earnedAll  = (int)($stats['EARNED_ALL'] ?? 0);
+$maxAll     = (int)($stats['MAX_ALL'] ?? 0);
+$missingAll = (int)($stats['MISSING_ALL'] ?? 0);
+$earnedDay  = (int)($stats['EARNED_DAY'] ?? 0);
+$maxDay     = (int)($stats['MAX_DAY'] ?? 0);
+$missingDay = max(0, $maxDay - $earnedDay);
+$rank       = (int)($stats['RANK'] ?? 0);
+$habitsDays = (int)($stats['HABITS_DAYS'] ?? 0);
+
+$effColor = function (float $p): string {
+    return $p < 30 ? '#c0392b' : ($p < 70 ? '#f5a623' : '#3a7d1c');
+};
 ?>
 <?php require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php'; ?>
 
@@ -72,6 +89,9 @@ $steps = $stats['STEPS'] ?? [];
     .x5pwa-metric { background: #f5f6f8; padding: 12px; border-radius: 6px; text-align: center; }
     .x5pwa-metric-value { font-size: 22px; font-weight: 600; color: #2c3e50; }
     .x5pwa-metric-label { font-size: 11px; color: #666; text-transform: uppercase; margin-top: 4px; }
+    .x5pwa-metric-value.x5pwa-green  { color: #3a7d1c; }
+    .x5pwa-metric-value.x5pwa-red    { color: #c0392b; }
+    .x5pwa-metric-value.x5pwa-blue   { color: #1e6bcc; }
     .x5pwa-week { display: flex; gap: 6px; }
     .x5pwa-week-day { flex: 1; background: #f0f2f5; padding: 8px 4px; text-align: center; border-radius: 4px; font-size: 11px; }
     .x5pwa-week-day.has-activity { background: #d4edaa; }
@@ -84,6 +104,20 @@ $steps = $stats['STEPS'] ?? [];
     .x5pwa-table td { padding: 6px 12px; border-bottom: 1px solid #eee; }
     .x5pwa-table td:first-child { width: 40%; }
     .x5pwa-table td:last-child { text-align: right; }
+
+    .x5pwa-eff-card { background:#fff; border:1px solid #e2e5e9; padding:20px; margin-bottom:16px; }
+    .x5pwa-eff-card h3 { margin:0 0 16px 0; font-size:14px; }
+    .x5pwa-eff-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+    .x5pwa-eff-block { }
+    .x5pwa-eff-title { font-size:11px; color:#666; text-transform:uppercase; margin-bottom:10px; }
+    .x5pwa-eff-main { display:flex; align-items:center; gap:16px; margin-bottom:10px; }
+    .x5pwa-eff-value { font-size:32px; font-weight:700; }
+    .x5pwa-eff-num { font-size:13px; color:#555; }
+    .x5pwa-eff-num b { font-family:monospace; }
+    .x5pwa-eff-bar { height:10px; background:#e2e5e9; border-radius:5px; overflow:hidden; margin-bottom:8px; }
+    .x5pwa-eff-bar-fill { height:100%; transition:width .2s; }
+    .x5pwa-eff-nums { display:flex; gap:20px; font-size:12px; color:#555; }
+    .x5pwa-eff-nums span { display:flex; align-items:center; gap:4px; }
 </style>
 
 <div style="margin-bottom:12px">
@@ -113,6 +147,83 @@ $steps = $stats['STEPS'] ?? [];
             <?php endif ?>
         </dd>
     </dl>
+</div>
+
+<!-- ЭФФЕКТИВНОСТЬ: собрано / возможно / недостаёт -->
+<div class="x5pwa-eff-card">
+    <h3>Эффективность</h3>
+
+    <div class="x5pwa-eff-grid">
+        <!-- За период -->
+        <div class="x5pwa-eff-block">
+            <div class="x5pwa-eff-title">За период статистики</div>
+            <div class="x5pwa-eff-main">
+                <div class="x5pwa-eff-value" style="color:<?= $effColor($effAll) ?>">
+                    <?= number_format($effAll, 1, '.', '') ?>%
+                </div>
+                <?php if ($rank > 0): ?>
+                    <div class="x5pwa-eff-num">
+                        Ранг: <b>#<?= $rank ?></b>
+                    </div>
+                <?php endif ?>
+            </div>
+            <div class="x5pwa-eff-bar">
+                <div class="x5pwa-eff-bar-fill"
+                     style="width:<?= max(0, min(100, $effAll)) ?>%;background:<?= $effColor($effAll) ?>"></div>
+            </div>
+            <div class="x5pwa-eff-nums">
+                <span>
+                    Собрано: <b style="color:#3a7d1c"><?= number_format($earnedAll, 0, '', ' ') ?></b>
+                </span>
+                <span>
+                    Возможно: <b><?= number_format($maxAll, 0, '', ' ') ?></b>
+                </span>
+                <span>
+                    Недостаёт:
+                    <b style="color:<?= $missingAll > 0 ? '#c0392b' : '#888' ?>">
+                        <?= $missingAll > 0 ? '−' . number_format($missingAll, 0, '', ' ') : '0' ?>
+                    </b>
+                </span>
+            </div>
+        </div>
+
+        <!-- За сегодня -->
+        <div class="x5pwa-eff-block">
+            <div class="x5pwa-eff-title">Сегодня (по локальной дате пользователя)</div>
+            <div class="x5pwa-eff-main">
+                <div class="x5pwa-eff-value" style="color:<?= $effColor($effDay) ?>">
+                    <?= number_format($effDay, 1, '.', '') ?>%
+                </div>
+                <div class="x5pwa-eff-num">
+                    Дней привычки: <b><?= $habitsDays ?></b>
+                </div>
+            </div>
+            <div class="x5pwa-eff-bar">
+                <div class="x5pwa-eff-bar-fill"
+                     style="width:<?= max(0, min(100, $effDay)) ?>%;background:<?= $effColor($effDay) ?>"></div>
+            </div>
+            <div class="x5pwa-eff-nums">
+                <span>
+                    Собрано: <b style="color:#3a7d1c"><?= number_format($earnedDay, 0, '', ' ') ?></b>
+                </span>
+                <span>
+                    Возможно: <b><?= number_format($maxDay, 0, '', ' ') ?></b>
+                </span>
+                <span>
+                    Недостаёт:
+                    <b style="color:<?= $missingDay > 0 ? '#c0392b' : '#888' ?>">
+                        <?= $missingDay > 0 ? '−' . number_format($missingDay, 0, '', ' ') : '0' ?>
+                    </b>
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div style="font-size:11px;color:#888;margin-top:16px">
+        <b>Возможно</b> = сумма дневных максимумов за период: BASE + направление пользователя + вклад его привычки (rewardPoints × timesPerDay).
+        <b>Собрано</b> = сумма фактически начисленных баллов из журнала наград.
+        Значения пересчитываются при «Пересчитать кеши» в «Общей статистике».
+    </div>
 </div>
 
 <div class="x5pwa-box">
@@ -203,7 +314,7 @@ $steps = $stats['STEPS'] ?? [];
     <h3>Награды</h3>
     <div class="x5pwa-grid" style="grid-template-columns: repeat(2, 1fr)">
         <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= (int)($stats['REWARDS_BALANCE'] ?? 0) ?></div>
+            <div class="x5pwa-metric-value x5pwa-green"><?= (int)($stats['REWARDS_BALANCE'] ?? 0) ?></div>
             <div class="x5pwa-metric-label">Баланс</div>
         </div>
         <div class="x5pwa-metric" style="display:flex;align-items:center;justify-content:center">
@@ -345,4 +456,4 @@ foreach ($stats['BY_HABIT'] as $id => $count) {
     </a>
 </div>
 
-<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php'; ?>
+<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php';

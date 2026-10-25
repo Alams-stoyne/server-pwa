@@ -1,6 +1,7 @@
 <?php
 /**
  * Общая статистика PWA.
+ * С абсолютными показателями: собрано / возможно / недостаёт / средняя эффективность.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -75,6 +76,16 @@ $fmtDate = function (?int $ts): string {
     return date('d.m.Y H:i:s', $ts);
 };
 
+$effColor = function (float $p): string {
+    return $p < 30 ? '#c0392b' : ($p < 70 ? '#f5a623' : '#3a7d1c');
+};
+
+// Новые агрегаты
+$totalEarned  = (int)($gp['EARNED_TOTAL'] ?? 0);
+$totalMax     = (int)($gp['MAX_TOTAL'] ?? 0);
+$totalMissing = (int)($gp['MISSING_TOTAL'] ?? 0);
+$avgEff       = (float)($gp['AVG_EFFICIENCY'] ?? 0);
+
 $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     . '&lang=' . LANGUAGE_ID
     . '&mid_menu=1'
@@ -86,8 +97,12 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     .x5pwa-box { background: #fff; padding: 20px; margin-bottom: 16px; border: 1px solid #e2e5e9; }
     .x5pwa-box h3 { margin: 0 0 16px 0; font-size: 15px; }
     .x5pwa-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .x5pwa-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
     .x5pwa-metric { background: #f5f6f8; padding: 20px; border-radius: 6px; text-align: center; }
     .x5pwa-metric-value { font-size: 32px; font-weight: 700; color: #1e6bcc; }
+    .x5pwa-metric-value.x5pwa-green  { color: #3a7d1c; }
+    .x5pwa-metric-value.x5pwa-red    { color: #c0392b; }
+    .x5pwa-metric-value.x5pwa-grey   { color: #555; }
     .x5pwa-metric-label { font-size: 12px; color: #666; text-transform: uppercase; margin-top: 6px; }
     .x5pwa-table { width: 100%; border-collapse: collapse; }
     .x5pwa-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #e2e5e9; background: #f8f9fa; font-size: 12px; font-weight: 600; color: #555; }
@@ -95,7 +110,12 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     .x5pwa-table tr:hover td { background: #f8f9fa; }
     .x5pwa-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #e0efff; color: #1e6bcc; }
     .x5pwa-bar { background: #e2e5e9; height: 8px; border-radius: 4px; overflow: hidden; width: 120px; display: inline-block; vertical-align: middle; }
-    .x5pwa-bar-fill { background: #3a7d1c; height: 100%; }
+    .x5pwa-bar-fill { height: 100%; }
+    .x5pwa-mono { font-family: monospace; }
+    .x5pwa-num { font-family: monospace; text-align: right; }
+    .x5pwa-num-green { color: #3a7d1c; font-family: monospace; text-align: right; }
+    .x5pwa-num-red { color: #c0392b; font-family: monospace; text-align: right; }
+    .x5pwa-num-grey { color: #555; font-family: monospace; text-align: right; }
 </style>
 
 <?php if ($message): ?>
@@ -139,12 +159,41 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     </dl>
 </div>
 
+<!-- ЭФФЕКТИВНОСТЬ: собрано / возможно / недостаёт -->
+<div class="x5pwa-box">
+    <h3>Эффективность</h3>
+    <div class="x5pwa-grid-4">
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-green"><?= $fmt($totalEarned) ?></div>
+            <div class="x5pwa-metric-label">Собрано яблок</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-grey"><?= $fmt($totalMax) ?></div>
+            <div class="x5pwa-metric-label">Максимум возможно</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-red"><?= $fmt($totalMissing) ?></div>
+            <div class="x5pwa-metric-label">Недостаёт</div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value" style="color:<?= $effColor($avgEff) ?>">
+                <?= number_format($avgEff, 1, '.', '') ?>%
+            </div>
+            <div class="x5pwa-metric-label">Средняя эффективность</div>
+        </div>
+    </div>
+    <div class="x5pwa-bar" style="width:100%;margin-top:16px">
+        <div class="x5pwa-bar-fill"
+             style="width:<?= max(0, min(100, $avgEff)) ?>%;background:<?= $effColor($avgEff) ?>"></div>
+    </div>
+</div>
+
 <div class="x5pwa-box">
     <h3>Итоговые показатели</h3>
     <div class="x5pwa-grid">
         <div class="x5pwa-metric">
             <div class="x5pwa-metric-value"><?= $fmt($gp['TOTAL_APPLES'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Всего яблок</div>
+            <div class="x5pwa-metric-label">Всего яблок<br><small>в балансах</small></div>
         </div>
         <div class="x5pwa-metric">
             <div class="x5pwa-metric-value"><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></div>
@@ -177,18 +226,28 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
         <table class="x5pwa-table">
             <thead>
                 <tr>
-                    <th style="width:60px">#</th>
+                    <th style="width:50px">#</th>
                     <th>Компания</th>
-                    <th style="text-align:right">Яблок</th>
-                    <th style="text-align:right; width:80px">Эффект.</th>
-                    <th style="width:160px">Прогресс</th>
+                    <th style="text-align:right;width:80px">Юзеров</th>
+                    <th style="text-align:right">Собрано</th>
+                    <th style="text-align:right">Возможно</th>
+                    <th style="text-align:right">Недостаёт</th>
+                    <th style="text-align:right;width:80px">Эфф.</th>
+                    <th style="width:180px">Прогресс</th>
+                    <th style="text-align:right;width:100px">Баланс</th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($companies as $i => $c): ?>
                     <?php
                     $percent = (float)($c['PERCENT'] ?? 0);
-                    $pct = max(0, min(100, $percent));
+                    $pct     = max(0, min(100, $percent));
+                    $color   = $effColor($percent);
+                    $users   = (int)($c['USERS'] ?? 0);
+                    $earned  = (int)($c['EARNED'] ?? 0);
+                    $max     = (int)($c['MAX'] ?? 0);
+                    $missing = (int)($c['MISSING'] ?? 0);
+                    $balance = (int)($c['TOTAL_APPLES'] ?? 0);
                     ?>
                     <tr>
                         <td><?= $i + 1 ?></td>
@@ -198,21 +257,49 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
                                 <span class="x5pwa-tag"><?= htmlspecialcharsbx((string)$c['ID']) ?></span>
                             <?php endif ?>
                         </td>
-                        <td style="text-align:right; font-family:monospace">
-                            <?= $fmt($c['TOTAL_APPLES'] ?? 0) ?>
+                        <td class="x5pwa-num"><?= $fmt($users) ?></td>
+                        <td class="x5pwa-num-green"><?= $fmt($earned) ?></td>
+                        <td class="x5pwa-num-grey"><?= $fmt($max) ?></td>
+                        <td class="x5pwa-num-red">
+                            <?= $missing > 0 ? '−' . $fmt($missing) : '0' ?>
                         </td>
-                        <td style="text-align:right; font-weight:600">
+                        <td style="text-align:right;font-weight:600;color:<?= $color ?>;font-family:monospace">
                             <?= number_format($percent, 1, '.', '') ?>%
                         </td>
                         <td>
-                            <div class="x5pwa-bar">
-                                <div class="x5pwa-bar-fill" style="width:<?= $pct ?>%"></div>
+                            <div class="x5pwa-bar" style="width:100%">
+                                <div class="x5pwa-bar-fill"
+                                     style="width:<?= $pct ?>%;background:<?= $color ?>"></div>
                             </div>
                         </td>
+                        <td class="x5pwa-num"><?= $fmt($balance) ?></td>
                     </tr>
                 <?php endforeach ?>
             </tbody>
+            <tfoot>
+                <tr style="background:#f0f2f5;font-weight:600">
+                    <td colspan="2">Итого</td>
+                    <td class="x5pwa-num"><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></td>
+                    <td class="x5pwa-num-green"><?= $fmt($totalEarned) ?></td>
+                    <td class="x5pwa-num-grey"><?= $fmt($totalMax) ?></td>
+                    <td class="x5pwa-num-red">
+                        <?= $totalMissing > 0 ? '−' . $fmt($totalMissing) : '0' ?>
+                    </td>
+                    <td style="text-align:right;font-weight:700;color:<?= $effColor($avgEff) ?>;font-family:monospace">
+                        <?= number_format($avgEff, 1, '.', '') ?>%
+                    </td>
+                    <td></td>
+                    <td class="x5pwa-num"><?= $fmt($gp['TOTAL_APPLES'] ?? 0) ?></td>
+                </tr>
+            </tfoot>
         </table>
+
+        <div style="font-size:11px;color:#888;margin-top:12px">
+            <b>Собрано</b> — сумма начисленных яблок за период (из журнала наград).
+            <b>Возможно</b> — сумма дневных максимумов для пользователей компании (BASE + направление + привычка).
+            <b>Баланс</b> — текущий баланс яблок пользователей компании (накопительный итог).
+            Если «Собрано» и «Баланс» расходятся — это нормально: баланс включает более ранние периоды.
+        </div>
     <?php endif ?>
 </div>
 
@@ -222,7 +309,7 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
         <?= bitrix_sessid_post() ?>
         <input type="hidden" name="x5_action" value="recalc_caches">
         <input type="submit" value="Пересчитать кеши" class="adm-btn"
-               onclick="return confirm('Пересчитать RANK / EFFICIENCY / HABITS_DAYS по всем активным пользователям?')">
+               onclick="return confirm('Пересчитать RANK / EFFICIENCY / EARNED / MAX / MISSING по всем активным пользователям?')">
     </form>
 
     <form method="post" action="x5_pwa_stats.php?lang=<?= LANGUAGE_ID ?>" style="display:inline-block">
@@ -233,4 +320,4 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     </form>
 </div>
 
-<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php'; ?>
+<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php';
