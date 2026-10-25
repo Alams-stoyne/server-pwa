@@ -26,16 +26,14 @@ class Reads
         Storage::touchBindingByUid($uid);
 
         // ─── Начисление награды ───
-        // Поддерживаем оба формата ID_LECTURE:
-        //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
-        //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты
-        // Legacy-формат "lecture-theme:YYYY-MM-DD:xyz" не парсится — награда не начисляется.
-        //
-        // ИЗМЕНЕНО: результат awardLecture сохраняется в $rewardPoints и
-        // попадает в ответ как REWARD_POINTS — ТОЛЬКО когда награда
-        // реально начислена (added === true). При повторном чтении
-        // (added === false / already === true) поля в ответе не будет.
+        // Источник (general / theme / charging) приходит из resolveLectureInfo —
+        // используется в RewardsBuilder для правильного actionType и лимитов:
+        //   lecture_general — общие лекции (без лимита по умолчанию);
+        //   lecture_theme   — лекции по направлению (лимит 1 в день по умолчанию);
+        //   charging        — зарядка (без лимита по умолчанию).
         $rewardPoints = 0;
+        $limitReached = false;
+        $limitInfo    = [];
 
         try {
             if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $id, $m)) {
@@ -58,23 +56,35 @@ class Reads
                         (int)$info['points'],
                         (string)$info['title'],
                         (string)$info['date'],
-                        $localDate
+                        $localDate,
+                        (string)($info['source'] ?? '')
                     );
 
                     if (!empty($res['added'])) {
                         $rewardPoints = (int)($res['points'] ?? 0);
+                    } elseif (($res['reason'] ?? '') === 'DAILY_LIMIT_REACHED') {
+                        $limitReached = true;
+                        $limitInfo    = [
+                            'limit' => (int)($res['limit'] ?? 0),
+                            'count' => (int)($res['count'] ?? 0),
+                            'type'  => (string)($info['source'] ?? ''),
+                        ];
                     }
 
                     \Bitrix\Main\Diag\Debug::writeToFile(
                         sprintf(
-                            'lecture award uid=%s elementId=%d type=%s points=%d lectureDate=%s localDate=%s added=%s',
+                            'lecture award uid=%s elementId=%d source=%s points=%d lectureDate=%s localDate=%s added=%s',
                             substr($uid, 0, 12) . '…',
                             $elementId,
-                            $info['type'],
+                            $info['source'] ?? '?',
                             (int)$info['points'],
                             $info['date'],
                             $localDate,
-                            !empty($res['added']) ? 'yes' : (!empty($res['already']) ? 'already' : 'no')
+                            !empty($res['added'])
+                                ? 'yes'
+                                : (($res['reason'] ?? '') === 'DAILY_LIMIT_REACHED'
+                                    ? 'daily_limit'
+                                    : (!empty($res['already']) ? 'already' : 'no'))
                         ),
                         'Reads::add',
                         '/x5.pwa.log'
@@ -102,9 +112,13 @@ class Reads
             'SERVER_DATETIME' => Storage::now()->format('Y-m-d\TH:i:s\Z'),
         ];
 
-        // Поле присутствует только если награда реально начислена
         if ($rewardPoints > 0) {
             $response['REWARD_POINTS'] = $rewardPoints;
+        }
+
+        if ($limitReached) {
+            $response['REWARD_LIMIT_REACHED'] = true;
+            $response['REWARD_LIMIT_INFO']    = $limitInfo;
         }
 
         return $response;

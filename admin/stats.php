@@ -1,7 +1,11 @@
 <?php
 /**
  * Общая статистика PWA.
- * С абсолютными показателями: собрано / возможно / недостаёт / средняя эффективность.
+ *
+ * GLOBAL_PROGRESS: LECTURES_READ / TASKS_DONE / HABITS_DAYS / STEPS_CONFIRMED /
+ * EVENTS_* — ЗА ПЕРИОД. Total-версии — в ключах *_TOTAL.
+ * Эффективность (EARNED/MAX/MISSING/AVG) — за период.
+ * TOTAL_APPLES — сумма балансов пользователей (накопительный).
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -80,7 +84,7 @@ $effColor = function (float $p): string {
     return $p < 30 ? '#c0392b' : ($p < 70 ? '#f5a623' : '#3a7d1c');
 };
 
-// Новые агрегаты
+// Агрегаты
 $totalEarned  = (int)($gp['EARNED_TOTAL'] ?? 0);
 $totalMax     = (int)($gp['MAX_TOTAL'] ?? 0);
 $totalMissing = (int)($gp['MISSING_TOTAL'] ?? 0);
@@ -105,8 +109,8 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     .x5pwa-metric-value.x5pwa-grey   { color: #555; }
     .x5pwa-metric-label { font-size: 12px; color: #666; text-transform: uppercase; margin-top: 6px; }
     .x5pwa-table { width: 100%; border-collapse: collapse; }
-    .x5pwa-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid #e2e5e9; background: #f8f9fa; font-size: 12px; font-weight: 600; color: #555; }
-    .x5pwa-table td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px; }
+    .x5pwa-table th { text-align: left; padding: 8px 10px; border-bottom: 2px solid #e2e5e9; background: #f8f9fa; font-size: 12px; font-weight: 600; color: #555; }
+    .x5pwa-table td { padding: 8px 10px; border-bottom: 1px solid #eee; font-size: 13px; }
     .x5pwa-table tr:hover td { background: #f8f9fa; }
     .x5pwa-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #e0efff; color: #1e6bcc; }
     .x5pwa-bar { background: #e2e5e9; height: 8px; border-radius: 4px; overflow: hidden; width: 120px; display: inline-block; vertical-align: middle; }
@@ -116,6 +120,11 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     .x5pwa-num-green { color: #3a7d1c; font-family: monospace; text-align: right; }
     .x5pwa-num-red { color: #c0392b; font-family: monospace; text-align: right; }
     .x5pwa-num-grey { color: #555; font-family: monospace; text-align: right; }
+    .x5pwa-activity-table { width:100%; border-collapse:collapse; }
+    .x5pwa-activity-table th { text-align:left; padding:8px 12px; background:#f8f9fa; font-size:12px; color:#555; border-bottom:2px solid #e2e5e9; }
+    .x5pwa-activity-table td { padding:8px 12px; border-bottom:1px solid #eee; font-size:13px; }
+    .x5pwa-activity-table td.num { text-align:right; font-family:monospace; }
+    .x5pwa-activity-table td.total { color:#888; }
 </style>
 
 <?php if ($message): ?>
@@ -159,9 +168,11 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     </dl>
 </div>
 
-<!-- ЭФФЕКТИВНОСТЬ: собрано / возможно / недостаёт -->
+<!-- ЭФФЕКТИВНОСТЬ за период -->
 <div class="x5pwa-box">
-    <h3>Эффективность</h3>
+    <h3>Эффективность <small style="color:#888;font-weight:400">
+        (<?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>)
+    </small></h3>
     <div class="x5pwa-grid-4">
         <div class="x5pwa-metric">
             <div class="x5pwa-metric-value x5pwa-green"><?= $fmt($totalEarned) ?></div>
@@ -188,117 +199,174 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
     </div>
 </div>
 
+<!-- АКТИВНОСТЬ: период + всего -->
 <div class="x5pwa-box">
-    <h3>Итоговые показатели</h3>
-    <div class="x5pwa-grid">
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $fmt($gp['TOTAL_APPLES'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Всего яблок<br><small>в балансах</small></div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Участников</div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $fmt($gp['LECTURES_READ'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Лекций прочитано</div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $fmt($gp['TASKS_DONE'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Заданий выполнено</div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $fmt($gp['HABITS_DAYS'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Дней привычки</div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= $fmt($gp['STEPS_CONFIRMED'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Шагов подтверждено</div>
-        </div>
+    <h3>Активность участников</h3>
+    <table class="x5pwa-activity-table">
+        <thead>
+            <tr>
+                <th>Показатель</th>
+                <th style="text-align:right">
+                    За период<br>
+                    <small style="color:#888;font-weight:400"><?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?></small>
+                </th>
+                <th style="text-align:right">За всё время</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Участников</td>
+                <td class="num"><b><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></b></td>
+                <td class="num total">—</td>
+            </tr>
+            <tr>
+                <td>Лекций прочитано</td>
+                <td class="num"><b><?= $fmt($gp['LECTURES_READ'] ?? 0) ?></b></td>
+                <td class="num total"><?= $fmt($gp['LECTURES_READ_TOTAL'] ?? 0) ?></td>
+            </tr>
+            <tr>
+                <td>Заданий выполнено</td>
+                <td class="num"><b><?= $fmt($gp['TASKS_DONE'] ?? 0) ?></b></td>
+                <td class="num total"><?= $fmt($gp['TASKS_DONE_TOTAL'] ?? 0) ?></td>
+            </tr>
+            <tr>
+                <td>Привычек отмечено</td>
+                <td class="num"><b><?= $fmt($gp['HABITS_DAYS'] ?? 0) ?></b></td>
+                <td class="num total"><?= $fmt($gp['HABITS_DAYS_TOTAL'] ?? 0) ?></td>
+            </tr>
+            <tr>
+                <td>Шагов подтверждено</td>
+                <td class="num"><b><?= $fmt($gp['STEPS_CONFIRMED'] ?? 0) ?></b></td>
+                <td class="num total"><?= $fmt($gp['STEPS_CONFIRMED_TOTAL'] ?? 0) ?></td>
+            </tr>
+            <tr>
+                <td>Событий посещено</td>
+                <td class="num"><b><?= $fmt($gp['EVENTS_VISITED'] ?? 0) ?></b></td>
+                <td class="num total">—</td>
+            </tr>
+            <tr>
+                <td>Событий подтверждено</td>
+                <td class="num"><b><?= $fmt($gp['EVENTS_CONFIRMED'] ?? 0) ?></b></td>
+                <td class="num total">—</td>
+            </tr>
+        </tbody>
+    </table>
+    <div style="font-size:11px;color:#888;margin-top:12px">
+        «За период» — активности в диапазоне <?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>.
+        «За всё время» — за всё время существования пользователей (по данным модуля).
+        События «посещено/подтверждено» показаны только за период — total по событиям не хранится в GLOBAL_PROGRESS.
     </div>
 </div>
 
+<!-- Балансы -->
+<div class="x5pwa-box">
+    <h3>Баланс яблок</h3>
+    <div class="x5pwa-grid" style="grid-template-columns: repeat(2, 1fr)">
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value"><?= $fmt($gp['TOTAL_APPLES'] ?? 0) ?></div>
+            <div class="x5pwa-metric-label">Всего в балансах<br><small>накопительно</small></div>
+        </div>
+        <div class="x5pwa-metric">
+            <div class="x5pwa-metric-value x5pwa-green"><?= $fmt($totalEarned) ?></div>
+            <div class="x5pwa-metric-label">Собрано за период</div>
+        </div>
+    </div>
+    <div style="font-size:11px;color:#888;margin-top:12px">
+        «Всего в балансах» — сумма текущих балансов всех пользователей (накопительно за всё время).
+        «Собрано за период» — сумма начислений в диапазоне периода. Разные цифры — норма: баланс включает более ранние периоды.
+    </div>
+</div>
+
+<!-- Компании -->
 <div class="x5pwa-box">
     <h3>Компании (<?= count($companies) ?>)</h3>
     <?php if (empty($companies)): ?>
         <div style="color:#888">Нет данных по компаниям.</div>
     <?php else: ?>
-        <table class="x5pwa-table">
-            <thead>
-                <tr>
-                    <th style="width:50px">#</th>
-                    <th>Компания</th>
-                    <th style="text-align:right;width:80px">Юзеров</th>
-                    <th style="text-align:right">Собрано</th>
-                    <th style="text-align:right">Возможно</th>
-                    <th style="text-align:right">Недостаёт</th>
-                    <th style="text-align:right;width:80px">Эфф.</th>
-                    <th style="width:180px">Прогресс</th>
-                    <th style="text-align:right;width:100px">Баланс</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($companies as $i => $c): ?>
-                    <?php
-                    $percent = (float)($c['PERCENT'] ?? 0);
-                    $pct     = max(0, min(100, $percent));
-                    $color   = $effColor($percent);
-                    $users   = (int)($c['USERS'] ?? 0);
-                    $earned  = (int)($c['EARNED'] ?? 0);
-                    $max     = (int)($c['MAX'] ?? 0);
-                    $missing = (int)($c['MISSING'] ?? 0);
-                    $balance = (int)($c['TOTAL_APPLES'] ?? 0);
-                    ?>
+        <div style="overflow-x:auto">
+            <table class="x5pwa-table">
+                <thead>
                     <tr>
-                        <td><?= $i + 1 ?></td>
-                        <td>
-                            <b><?= htmlspecialcharsbx((string)($c['NAME'] ?? $c['ID'] ?? '—')) ?></b>
-                            <?php if (!empty($c['ID'])): ?>
-                                <span class="x5pwa-tag"><?= htmlspecialcharsbx((string)$c['ID']) ?></span>
-                            <?php endif ?>
-                        </td>
-                        <td class="x5pwa-num"><?= $fmt($users) ?></td>
-                        <td class="x5pwa-num-green"><?= $fmt($earned) ?></td>
-                        <td class="x5pwa-num-grey"><?= $fmt($max) ?></td>
-                        <td class="x5pwa-num-red">
-                            <?= $missing > 0 ? '−' . $fmt($missing) : '0' ?>
-                        </td>
-                        <td style="text-align:right;font-weight:600;color:<?= $color ?>;font-family:monospace">
-                            <?= number_format($percent, 1, '.', '') ?>%
-                        </td>
-                        <td>
-                            <div class="x5pwa-bar" style="width:100%">
-                                <div class="x5pwa-bar-fill"
-                                     style="width:<?= $pct ?>%;background:<?= $color ?>"></div>
-                            </div>
-                        </td>
-                        <td class="x5pwa-num"><?= $fmt($balance) ?></td>
+                        <th style="width:40px">#</th>
+                        <th>Компания</th>
+                        <th style="text-align:right;width:70px">Юзеров</th>
+                        <th style="text-align:right">Собрано</th>
+                        <th style="text-align:right">Возможно</th>
+                        <th style="text-align:right">Недостаёт</th>
+                        <th style="text-align:right;width:70px">Эфф.</th>
+                        <th style="text-align:right">Лекций</th>
+                        <th style="text-align:right">Заданий</th>
+                        <th style="text-align:right">Привычек</th>
+                        <th style="text-align:right">Шагов</th>
+                        <th style="text-align:right">Событий</th>
+                        <th style="text-align:right">Баланс<br><small style="font-weight:400;color:#888">всего</small></th>
                     </tr>
-                <?php endforeach ?>
-            </tbody>
-            <tfoot>
-                <tr style="background:#f0f2f5;font-weight:600">
-                    <td colspan="2">Итого</td>
-                    <td class="x5pwa-num"><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></td>
-                    <td class="x5pwa-num-green"><?= $fmt($totalEarned) ?></td>
-                    <td class="x5pwa-num-grey"><?= $fmt($totalMax) ?></td>
-                    <td class="x5pwa-num-red">
-                        <?= $totalMissing > 0 ? '−' . $fmt($totalMissing) : '0' ?>
-                    </td>
-                    <td style="text-align:right;font-weight:700;color:<?= $effColor($avgEff) ?>;font-family:monospace">
-                        <?= number_format($avgEff, 1, '.', '') ?>%
-                    </td>
-                    <td></td>
-                    <td class="x5pwa-num"><?= $fmt($gp['TOTAL_APPLES'] ?? 0) ?></td>
-                </tr>
-            </tfoot>
-        </table>
+                </thead>
+                <tbody>
+                    <?php foreach ($companies as $i => $c): ?>
+                        <?php
+                        $percent = (float)($c['PERCENT'] ?? 0);
+                        $color   = $effColor($percent);
+                        $users   = (int)($c['USERS'] ?? 0);
+                        $earned  = (int)($c['EARNED'] ?? 0);
+                        $max     = (int)($c['MAX'] ?? 0);
+                        $missing = (int)($c['MISSING'] ?? 0);
+                        $balance = (int)($c['TOTAL_APPLES'] ?? 0);
+                        $lect    = (int)($c['LECTURES'] ?? 0);
+                        $task    = (int)($c['TASKS'] ?? 0);
+                        $habit   = (int)($c['HABITS'] ?? 0);
+                        $stp     = (int)($c['STEPS'] ?? 0);
+                        $evt     = (int)($c['EVENTS_CONFIRMED'] ?? 0);
+                        ?>
+                        <tr>
+                            <td><?= $i + 1 ?></td>
+                            <td>
+                                <b><?= htmlspecialcharsbx((string)($c['NAME'] ?? $c['ID'] ?? '—')) ?></b>
+                                <?php if (!empty($c['ID'])): ?>
+                                    <span class="x5pwa-tag"><?= htmlspecialcharsbx((string)$c['ID']) ?></span>
+                                <?php endif ?>
+                            </td>
+                            <td class="x5pwa-num"><?= $fmt($users) ?></td>
+                            <td class="x5pwa-num-green"><?= $fmt($earned) ?></td>
+                            <td class="x5pwa-num-grey"><?= $fmt($max) ?></td>
+                            <td class="x5pwa-num-red"><?= $missing > 0 ? '−' . $fmt($missing) : '0' ?></td>
+                            <td style="text-align:right;font-weight:600;color:<?= $color ?>;font-family:monospace">
+                                <?= number_format($percent, 1, '.', '') ?>%
+                            </td>
+                            <td class="x5pwa-num"><?= $fmt($lect) ?></td>
+                            <td class="x5pwa-num"><?= $fmt($task) ?></td>
+                            <td class="x5pwa-num"><?= $fmt($habit) ?></td>
+                            <td class="x5pwa-num"><?= $fmt($stp) ?></td>
+                            <td class="x5pwa-num"><?= $fmt($evt) ?></td>
+                            <td class="x5pwa-num"><?= $fmt($balance) ?></td>
+                        </tr>
+                    <?php endforeach ?>
+                </tbody>
+                <tfoot>
+                    <tr style="background:#f0f2f5;font-weight:600">
+                        <td colspan="2">Итого</td>
+                        <td class="x5pwa-num"><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></td>
+                        <td class="x5pwa-num-green"><?= $fmt($totalEarned) ?></td>
+                        <td class="x5pwa-num-grey"><?= $fmt($totalMax) ?></td>
+                        <td class="x5pwa-num-red"><?= $totalMissing > 0 ? '−' . $fmt($totalMissing) : '0' ?></td>
+                        <td style="text-align:right;font-weight:700;color:<?= $effColor($avgEff) ?>;font-family:monospace">
+                            <?= number_format($avgEff, 1, '.', '') ?>%
+                        </td>
+                        <td class="x5pwa-num"><?= $fmt($gp['LECTURES_READ'] ?? 0) ?></td>
+                        <td class="x5pwa-num"><?= $fmt($gp['TASKS_DONE'] ?? 0) ?></td>
+                        <td class="x5pwa-num"><?= $fmt($gp['HABITS_DAYS'] ?? 0) ?></td>
+                        <td class="x5pwa-num"><?= $fmt($gp['STEPS_CONFIRMED'] ?? 0) ?></td>
+                        <td class="x5pwa-num"><?= $fmt($gp['EVENTS_CONFIRMED'] ?? 0) ?></td>
+                        <td class="x5pwa-num"><?= $fmt($gp['TOTAL_APPLES'] ?? 0) ?></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
 
         <div style="font-size:11px;color:#888;margin-top:12px">
-            <b>Собрано</b> — сумма начисленных яблок за период (из журнала наград).
-            <b>Возможно</b> — сумма дневных максимумов для пользователей компании (BASE + направление + привычка).
-            <b>Баланс</b> — текущий баланс яблок пользователей компании (накопительный итог).
-            Если «Собрано» и «Баланс» расходятся — это нормально: баланс включает более ранние периоды.
+            Колонки «Собрано / Возможно / Недостаёт / Эфф. / Лекций / Заданий / Привычек / Шагов / Событий» —
+            за период <?= htmlspecialcharsbx((string)($period['FROM'] ?? '—')) ?> — <?= htmlspecialcharsbx((string)($period['TO'] ?? '—')) ?>.
+            Колонка «Баланс» — накопительная, за всё время (сумма текущих балансов пользователей компании).
         </div>
     <?php endif ?>
 </div>

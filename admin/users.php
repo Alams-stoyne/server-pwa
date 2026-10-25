@@ -1,7 +1,12 @@
 <?php
 /**
- * Список пользователей PWA (CAdminUiList) с блокировкой и удалением.
- * С эффективностью: собрано / возможно / недостаёт.
+ * Список пользователей PWA (CAdminUiList).
+ *
+ * Колонки «Лекций / Заданий / Привычек / Шагов / Событий» — ЗА ПЕРИОД
+ * (stats_period_start..stats_period_end).
+ * Total-версии («* (всего)») включены через «Настроить» / скрытые колонки.
+ * Эффективность/Собрано/Недостаёт — за период.
+ * Баланс — накопительный, за всё время.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -220,7 +225,10 @@ $params = [
 
 $data = \X5\Pwa\StatsBuilder::listUsers($params);
 
-// Агрегат по текущему фильтру (без пагинации)
+// Период (для подписи в шапке и колонках)
+[$periodFrom, $periodTo] = \X5\Pwa\StatsBuilder::getEffectivePeriod();
+
+// Агрегат по фильтру (без пагинации)
 $agg = \X5\Pwa\StatsBuilder::getUsersAggregate([
     'search'      => $search,
     'theme'       => $theme,
@@ -246,29 +254,39 @@ $lAdmin->SetNavigationParams($rsData, ['nPageSize' => $perPage]);
 // Колонки
 // ─────────────────────────────────────────────────────────
 $arHeader = [
-    ['id' => 'STATUS',          'content' => 'Статус',       'default' => true],
-    ['id' => 'FIO',             'content' => 'Ф.И.О',        'sort' => 'FIO',             'default' => true],
-    ['id' => 'NICKNAME',        'content' => 'Никнейм',      'sort' => 'NICKNAME',        'default' => true],
-    ['id' => 'WORKPLACE',       'content' => 'Место работы', 'sort' => 'WORKPLACE',       'default' => true],
-    ['id' => 'THEME',           'content' => 'Направление',  'sort' => 'THEME',           'default' => true],
-    ['id' => 'LAST_SEEN_AT',    'content' => 'Активность',   'sort' => 'LAST_SEEN_AT',    'default' => true],
-    ['id' => 'HAS_SUBSCRIPTION','content' => 'Push',                                        'default' => true],
-    ['id' => 'EFFICIENCY_ALL',  'content' => 'Эффективность','sort' => 'EFFICIENCY_ALL',  'default' => true],
-    ['id' => 'EARNED_ALL',      'content' => 'Собрано',      'sort' => 'EARNED_ALL',      'default' => true],
-    ['id' => 'MISSING_ALL',     'content' => 'Недостаёт',    'sort' => 'MISSING_ALL',     'default' => true],
-    ['id' => 'LECTURES_READ',   'content' => 'Лекций',                                      'default' => true],
-    ['id' => 'TASKS_DONE',      'content' => 'Заданий',                                     'default' => true],
-    ['id' => 'HABITS_DONE',     'content' => 'Привычек',                                    'default' => true],
-    ['id' => 'MAX_ALL',         'content' => 'Возможно',     'sort' => 'EARNED_ALL',      'default' => false],
-    ['id' => 'EFFICIENCY_DAY',  'content' => 'Эфф. сегодня',                                'default' => false],
-    ['id' => 'EARNED_DAY',      'content' => 'Сегодня собрано',                             'default' => false],
-    ['id' => 'MAX_DAY',         'content' => 'Сегодня возможно',                            'default' => false],
-    ['id' => 'REWARD_BALANCE',  'content' => 'Баланс',                                      'default' => false],
-    ['id' => 'UID',             'content' => 'UID',          'sort' => 'UID',             'default' => false],
-    ['id' => 'CREATED_AT',      'content' => 'Создан',       'sort' => 'CREATED_AT',      'default' => false],
+    ['id' => 'STATUS',           'content' => 'Статус',        'default' => true],
+    ['id' => 'FIO',              'content' => 'Ф.И.О',         'sort' => 'FIO',            'default' => true],
+    ['id' => 'NICKNAME',         'content' => 'Никнейм',       'sort' => 'NICKNAME',       'default' => true],
+    ['id' => 'WORKPLACE',        'content' => 'Место работы',  'sort' => 'WORKPLACE',      'default' => true],
+    ['id' => 'THEME',            'content' => 'Направление',   'sort' => 'THEME',          'default' => true],
+    ['id' => 'LAST_SEEN_AT',     'content' => 'Активность',    'sort' => 'LAST_SEEN_AT',   'default' => true],
+    ['id' => 'HAS_SUBSCRIPTION', 'content' => 'Push',                                       'default' => true],
+    ['id' => 'EFFICIENCY_ALL',   'content' => 'Эффективность', 'sort' => 'EFFICIENCY_ALL', 'default' => true],
+    ['id' => 'EARNED_ALL',       'content' => 'Собрано',       'sort' => 'EARNED_ALL',     'default' => true],
+    ['id' => 'MISSING_ALL',      'content' => 'Недостаёт',     'sort' => 'MISSING_ALL',    'default' => true],
+    ['id' => 'LECTURES_READ',    'content' => 'Лекций (период)',    'default' => true],
+    ['id' => 'TASKS_DONE',       'content' => 'Заданий (период)',   'default' => true],
+    ['id' => 'HABITS_DONE',      'content' => 'Привычек (период)',  'default' => true],
+    ['id' => 'STEPS_CONFIRMED',  'content' => 'Шагов (период)',     'default' => false],
+    ['id' => 'EVENTS_CONFIRMED', 'content' => 'Событий (период)',   'default' => false],
+    ['id' => 'LECTURES_READ_TOTAL',  'content' => 'Лекций (всего)',    'default' => false],
+    ['id' => 'TASKS_DONE_TOTAL',     'content' => 'Заданий (всего)',   'default' => false],
+    ['id' => 'HABITS_DONE_TOTAL',    'content' => 'Привычек (всего)',  'default' => false],
+    ['id' => 'MAX_ALL',              'content' => 'Возможно (период)', 'default' => false],
+    ['id' => 'EFFICIENCY_DAY',       'content' => 'Эфф. сегодня',      'default' => false],
+    ['id' => 'EARNED_DAY',           'content' => 'Сегодня собрано',   'default' => false],
+    ['id' => 'MAX_DAY',              'content' => 'Сегодня возможно',  'default' => false],
+    ['id' => 'REWARD_BALANCE',       'content' => 'Баланс (всего)',    'default' => false],
+    ['id' => 'UID',                  'content' => 'UID',      'sort' => 'UID',       'default' => false],
+    ['id' => 'CREATED_AT',           'content' => 'Создан',   'sort' => 'CREATED_AT','default' => false],
 ];
 
 $lAdmin->AddHeaders($arHeader);
+$lAdmin->AddVisibleHeaderColumn('STEPS_CONFIRMED');
+$lAdmin->AddVisibleHeaderColumn('EVENTS_CONFIRMED');
+$lAdmin->AddVisibleHeaderColumn('LECTURES_READ_TOTAL');
+$lAdmin->AddVisibleHeaderColumn('TASKS_DONE_TOTAL');
+$lAdmin->AddVisibleHeaderColumn('HABITS_DONE_TOTAL');
 $lAdmin->AddVisibleHeaderColumn('MAX_ALL');
 $lAdmin->AddVisibleHeaderColumn('EFFICIENCY_DAY');
 $lAdmin->AddVisibleHeaderColumn('EARNED_DAY');
@@ -316,9 +334,16 @@ foreach ($data['rows'] as $u) {
         'EARNED_DAY'       => (int)$u['EARNED_DAY'],
         'MAX_DAY'          => (int)$u['MAX_DAY'],
         'REWARD_BALANCE'   => (int)$u['REWARD_BALANCE'],
+        // Period-метрики
         'LECTURES_READ'    => (int)$u['LECTURES_READ'],
         'TASKS_DONE'       => (int)$u['TASKS_DONE'],
         'HABITS_DONE'      => (int)$u['HABITS_DONE'],
+        'STEPS_CONFIRMED'  => (int)$u['STEPS_CONFIRMED'],
+        'EVENTS_CONFIRMED' => (int)$u['EVENTS_CONFIRMED'],
+        // Total-метрики
+        'LECTURES_READ_TOTAL' => (int)$u['LECTURES_READ_TOTAL'],
+        'TASKS_DONE_TOTAL'    => (int)$u['TASKS_DONE_TOTAL'],
+        'HABITS_DONE_TOTAL'   => (int)$u['HABITS_DONE_TOTAL'],
     ];
 
     $row = $lAdmin->AddRow($uid, $arRes);
@@ -465,28 +490,36 @@ $lAdmin->SetContextMenu([
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php';
 ?>
 
-<div style="background:#fff;padding:14px 18px;border:1px solid #e2e5e9;margin-bottom:14px;display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
-    <div>
-        <div style="font-size:11px;color:#666;text-transform:uppercase">Всего пользователей</div>
-        <div style="font-size:22px;font-weight:600;color:#2c3e50"><?= (int)$agg['total'] ?></div>
-    </div>
-    <div>
-        <div style="font-size:11px;color:#666;text-transform:uppercase">Собрано за период</div>
-        <div style="font-size:22px;font-weight:600;color:#3a7d1c"><?= number_format((int)$agg['earned_sum'], 0, '', ' ') ?></div>
-    </div>
-    <div>
-        <div style="font-size:11px;color:#666;text-transform:uppercase">Возможно за период</div>
-        <div style="font-size:22px;font-weight:600;color:#555"><?= number_format((int)$agg['max_sum'], 0, '', ' ') ?></div>
-    </div>
-    <div>
-        <div style="font-size:11px;color:#666;text-transform:uppercase">Недостаёт</div>
-        <div style="font-size:22px;font-weight:600;color:#c0392b"><?= number_format((int)$agg['missing_sum'], 0, '', ' ') ?></div>
-    </div>
-    <div>
-        <div style="font-size:11px;color:#666;text-transform:uppercase">Средняя эффективность</div>
-        <div style="font-size:22px;font-weight:600;color:#1e6bcc">
-            <?= number_format((float)$agg['avg_eff'], 1, '.', '') ?>%
+<div style="background:#fff;padding:14px 18px;border:1px solid #e2e5e9;margin-bottom:14px">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
+        <div>
+            <div style="font-size:11px;color:#666;text-transform:uppercase">Всего пользователей</div>
+            <div style="font-size:22px;font-weight:600;color:#2c3e50"><?= (int)$agg['total'] ?></div>
         </div>
+        <div>
+            <div style="font-size:11px;color:#666;text-transform:uppercase">Собрано за период</div>
+            <div style="font-size:22px;font-weight:600;color:#3a7d1c"><?= number_format((int)$agg['earned_sum'], 0, '', ' ') ?></div>
+        </div>
+        <div>
+            <div style="font-size:11px;color:#666;text-transform:uppercase">Возможно за период</div>
+            <div style="font-size:22px;font-weight:600;color:#555"><?= number_format((int)$agg['max_sum'], 0, '', ' ') ?></div>
+        </div>
+        <div>
+            <div style="font-size:11px;color:#666;text-transform:uppercase">Недостаёт</div>
+            <div style="font-size:22px;font-weight:600;color:#c0392b"><?= number_format((int)$agg['missing_sum'], 0, '', ' ') ?></div>
+        </div>
+        <div>
+            <div style="font-size:11px;color:#666;text-transform:uppercase">Средняя эффективность</div>
+            <div style="font-size:22px;font-weight:600;color:#1e6bcc">
+                <?= number_format((float)$agg['avg_eff'], 1, '.', '') ?>%
+            </div>
+        </div>
+    </div>
+    <div style="font-size:11px;color:#888;margin-top:10px">
+        Период: <b><?= htmlspecialcharsbx($periodFrom) ?></b> — <b><?= htmlspecialcharsbx($periodTo) ?></b>.
+        Колонки «Лекций / Заданий / Привычек (период)» и «Эффективность / Собрано / Недостаёт» —
+        за этот период. Total-версии («* (всего)») включаются через «Настроить».
+        «Баланс» — накопительный, за всё время.
     </div>
 </div>
 
@@ -635,7 +668,7 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 
 <?php
 // ─────────────────────────────────────────────────────────
-// Обработка одиночных действий (single_uid + action)
+// Обработка одиночных действий
 // ─────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && check_bitrix_sessid()

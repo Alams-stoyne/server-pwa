@@ -1,10 +1,15 @@
 <?php
 namespace X5\Pwa;
 
+use Bitrix\Main\Entity\ExpressionField;
+
 class RewardsBuilder
 {
     public const TYPE_HABIT           = 'habit';
+    /** @deprecated Используется для старых записей (до разделения lecture на general/theme). */
     public const TYPE_LECTURE         = 'lecture';
+    public const TYPE_LECTURE_GENERAL = 'lecture_general';
+    public const TYPE_LECTURE_THEME   = 'lecture_theme';
     public const TYPE_CHARGING        = 'charging';
     public const TYPE_TASK            = 'task';
     public const TYPE_REFLECTION      = 'reflection';
@@ -15,6 +20,8 @@ class RewardsBuilder
     public const ALL_TYPES = [
         self::TYPE_HABIT,
         self::TYPE_LECTURE,
+        self::TYPE_LECTURE_GENERAL,
+        self::TYPE_LECTURE_THEME,
         self::TYPE_CHARGING,
         self::TYPE_TASK,
         self::TYPE_REFLECTION,
@@ -24,14 +31,16 @@ class RewardsBuilder
     ];
 
     public const TITLES = [
-        self::TYPE_HABIT          => 'Привычка',
-        self::TYPE_LECTURE        => 'Лекция',
-        self::TYPE_CHARGING       => 'Зарядка',
-        self::TYPE_TASK           => 'Практика',
-        self::TYPE_REFLECTION     => 'Рефлексия',
-        self::TYPE_STEPS_SENT     => 'Шаги (отправка)',
-        self::TYPE_STEPS_APPROVED => 'Шаги (подтверждено)',
-        self::TYPE_EVENT          => 'Мероприятие',
+        self::TYPE_HABIT           => 'Привычка',
+        self::TYPE_LECTURE         => 'Лекция (legacy)',
+        self::TYPE_LECTURE_GENERAL => 'Общая лекция',
+        self::TYPE_LECTURE_THEME   => 'Лекция по направлению',
+        self::TYPE_CHARGING        => 'Зарядка',
+        self::TYPE_TASK            => 'Практика',
+        self::TYPE_REFLECTION      => 'Рефлексия',
+        self::TYPE_STEPS_SENT      => 'Шаги (отправка)',
+        self::TYPE_STEPS_APPROVED  => 'Шаги (подтверждено)',
+        self::TYPE_EVENT           => 'Мероприятие',
     ];
 
     public static function award(
@@ -58,6 +67,30 @@ class RewardsBuilder
         }
 
         $localDate = $localDate ?: self::userLocalDate($uid);
+
+        // ─── Дневной лимит ───
+        $limitCheck = self::checkDailyLimit($uid, $actionType, $localDate);
+        if (!$limitCheck['ok']) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                sprintf(
+                    'DAILY_LIMIT_REACHED uid=%s type=%s id=%s date=%s count=%d limit=%d',
+                    substr($uid, 0, 12) . '…', $actionType, $actionId,
+                    $localDate, (int)$limitCheck['count'], (int)$limitCheck['limit']
+                ),
+                'RewardsBuilder::award',
+                '/x5.pwa.log'
+            );
+            return [
+                'ok'      => true,
+                'added'   => false,
+                'already' => false,
+                'reason'  => 'DAILY_LIMIT_REACHED',
+                'limit'   => (int)$limitCheck['limit'],
+                'count'   => (int)$limitCheck['count'],
+                'points'  => 0,
+                'balance' => self::getBalance($uid),
+            ];
+        }
 
         $uniqueKey = md5($uid . ':' . $actionType . ':' . $actionId);
 
@@ -119,6 +152,81 @@ class RewardsBuilder
         ];
     }
 
+    /**
+     * Проверка дневного лимита для данного actionType.
+     * Лимиты задаются в настройках модуля. 0 = без ограничений.
+     *
+     * Важно: для лекций считаем COUNT с учётом legacy-типа 'lecture',
+     * чтобы старые записи (до разделения на general/theme) тоже учитывались:
+     *   lecture_theme / lecture  → IN ('lecture', 'lecture_theme')
+     *   lecture_general          → IN ('lecture', 'lecture_general')
+     *
+     * @return array{ok:bool, reason?:string, limit?:int, count?:int}
+     */
+    private static function checkDailyLimit(string $uid, string $actionType, string $localDate): array
+    {
+        $limitsMap = [
+            self::TYPE_LECTURE_GENERAL => [
+                'limit' => Settings::dailyGeneralLectureLimit(),
+                'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_GENERAL],
+            ],
+            self::TYPE_LECTURE_THEME => [
+                'limit' => Settings::dailyThemeLectureLimit(),
+                'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME],
+            ],
+            self::TYPE_LECTURE => [
+                // fallback-тип — не знаем, какая это была лекция, считаем консервативно
+                // по счётчику «лекции по направлению»
+                'limit' => Settings::dailyThemeLectureLimit(),
+                'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME],
+            ],
+            self::TYPE_CHARGING => [
+                'limit' => Settings::dailyChargingLimit(),
+                'types' => [self::TYPE_CHARGING],
+            ],
+            self::TYPE_TASK => [
+                'limit' => Settings::dailyTaskLimit(),
+                'types' => [self::TYPE_TASK],
+            ],
+        ];
+
+        if (!isset($limitsMap[$actionType])) {
+            return ['ok' => true];
+        }
+
+        $limit = (int)$limitsMap[$actionType]['limit'];
+        if ($limit <= 0) {
+            return ['ok' => true];
+        }
+
+        $types = $limitsMap[$actionType]['types'];
+        if (!$types) {
+            return ['ok' => true];
+        }
+
+        try {
+            $dc = Storage::dataClass('X5PwaRewardLog');
+            $row = $dc::getList([
+                'select'  => ['CNT'],
+                'filter'  => [
+                    '=UF_UID'         => $uid,
+                    '=UF_LOCAL_DATE'  => $localDate,
+                    '=UF_ACTION_TYPE' => $types,
+                ],
+                'runtime' => [new ExpressionField('CNT', 'COUNT(*)')],
+            ])->fetch();
+            $count = (int)($row['CNT'] ?? 0);
+        } catch (\Throwable $e) {
+            // При сбое БД не блокируем — лучше начислить, чем оставить юзера без награды
+            return ['ok' => true];
+        }
+
+        if ($count >= $limit) {
+            return ['ok' => false, 'reason' => 'DAILY_LIMIT_REACHED', 'limit' => $limit, 'count' => $count];
+        }
+        return ['ok' => true];
+    }
+
     public static function awardHabit(string $uid, array $habitCfg, int $doneToday, string $localDate): array
     {
         $timesPerDay = (int)($habitCfg['timesPerDay'] ?? 1);
@@ -153,7 +261,8 @@ class RewardsBuilder
         int $points,
         string $title,
         string $elementDate,
-        string $localDate
+        string $localDate,
+        string $source = ''
     ): array {
         if ($elementDate !== $localDate) {
             return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
@@ -162,7 +271,15 @@ class RewardsBuilder
             return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
         }
 
-        $actionType = $elementType === 'charging' ? self::TYPE_CHARGING : self::TYPE_LECTURE;
+        if ($source === 'general') {
+            $actionType = self::TYPE_LECTURE_GENERAL;
+        } elseif ($source === 'theme') {
+            $actionType = self::TYPE_LECTURE_THEME;
+        } elseif ($elementType === 'charging') {
+            $actionType = self::TYPE_CHARGING;
+        } else {
+            $actionType = self::TYPE_LECTURE;
+        }
 
         return self::award(
             $uid,
@@ -281,6 +398,9 @@ class RewardsBuilder
         );
     }
 
+    /**
+     * @return array{type:string, source:string, title:string, date:string, points:int}|null
+     */
     public static function resolveLectureInfo(int $elementId): ?array
     {
         if ($elementId <= 0) return null;
@@ -302,7 +422,11 @@ class RewardsBuilder
         if (!$el = $rs->Fetch()) return null;
 
         $ibId = (int)$el['IBLOCK_ID'];
-        $type = $ibId === $ibCharging ? 'charging' : 'lecture';
+
+        $type   = $ibId === $ibCharging ? 'charging' : 'lecture';
+        $source = 'theme';
+        if ($ibId === $ibGeneral)  $source = 'general';
+        elseif ($ibId === $ibCharging) $source = 'charging';
 
         $dateStr = '';
         foreach ([$el['ACTIVE_FROM'] ?? '', $el['DATE_ACTIVE_FROM'] ?? ''] as $raw) {
@@ -322,6 +446,7 @@ class RewardsBuilder
 
         return [
             'type'   => $type,
+            'source' => $source,
             'title'  => (string)$el['NAME'],
             'date'   => $dateStr,
             'points' => $points,

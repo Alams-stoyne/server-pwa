@@ -1,7 +1,9 @@
 <?php
 /**
  * Детальная статистика пользователя.
- * С эффективностью: собрано / возможно / недостаёт.
+ *
+ * Все количественные метрики активности продублированы в двух разрезах:
+ * «за период» (stats_period_start..stats_period_end) и «за всё время».
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -60,7 +62,6 @@ function fmt_iso(?string $iso): string
 
 $steps = $stats['STEPS'] ?? [];
 
-// v17: данные эффективности
 $effAll     = (float)($stats['EFFICIENCY_ALL'] ?? 0);
 $effDay     = (float)($stats['EFFICIENCY_DAY'] ?? 0);
 $earnedAll  = (int)($stats['EARNED_ALL'] ?? 0);
@@ -71,6 +72,9 @@ $maxDay     = (int)($stats['MAX_DAY'] ?? 0);
 $missingDay = max(0, $maxDay - $earnedDay);
 $rank       = (int)($stats['RANK'] ?? 0);
 $habitsDays = (int)($stats['HABITS_DAYS'] ?? 0);
+
+$periodFrom = (string)($stats['PERIOD_FROM'] ?? '');
+$periodTo   = (string)($stats['PERIOD_TO']   ?? '');
 
 $effColor = function (float $p): string {
     return $p < 30 ? '#c0392b' : ($p < 70 ? '#f5a623' : '#3a7d1c');
@@ -118,6 +122,12 @@ $effColor = function (float $p): string {
     .x5pwa-eff-bar-fill { height:100%; transition:width .2s; }
     .x5pwa-eff-nums { display:flex; gap:20px; font-size:12px; color:#555; }
     .x5pwa-eff-nums span { display:flex; align-items:center; gap:4px; }
+
+    .x5pwa-activity-table { width:100%; border-collapse:collapse; }
+    .x5pwa-activity-table th { text-align:left; padding:8px 12px; background:#f8f9fa; font-size:12px; color:#555; border-bottom:2px solid #e2e5e9; }
+    .x5pwa-activity-table td { padding:8px 12px; border-bottom:1px solid #eee; font-size:13px; }
+    .x5pwa-activity-table td.num { text-align:right; font-family:monospace; }
+    .x5pwa-activity-table td.total { color:#888; }
 </style>
 
 <div style="margin-bottom:12px">
@@ -149,14 +159,13 @@ $effColor = function (float $p): string {
     </dl>
 </div>
 
-<!-- ЭФФЕКТИВНОСТЬ: собрано / возможно / недостаёт -->
+<!-- ЭФФЕКТИВНОСТЬ -->
 <div class="x5pwa-eff-card">
     <h3>Эффективность</h3>
 
     <div class="x5pwa-eff-grid">
-        <!-- За период -->
         <div class="x5pwa-eff-block">
-            <div class="x5pwa-eff-title">За период статистики</div>
+            <div class="x5pwa-eff-title">За период (<?= htmlspecialcharsbx($periodFrom) ?> — <?= htmlspecialcharsbx($periodTo) ?>)</div>
             <div class="x5pwa-eff-main">
                 <div class="x5pwa-eff-value" style="color:<?= $effColor($effAll) ?>">
                     <?= number_format($effAll, 1, '.', '') ?>%
@@ -187,7 +196,6 @@ $effColor = function (float $p): string {
             </div>
         </div>
 
-        <!-- За сегодня -->
         <div class="x5pwa-eff-block">
             <div class="x5pwa-eff-title">Сегодня (по локальной дате пользователя)</div>
             <div class="x5pwa-eff-main">
@@ -223,6 +231,46 @@ $effColor = function (float $p): string {
         <b>Возможно</b> = сумма дневных максимумов за период: BASE + направление пользователя + вклад его привычки (rewardPoints × timesPerDay).
         <b>Собрано</b> = сумма фактически начисленных баллов из журнала наград.
         Значения пересчитываются при «Пересчитать кеши» в «Общей статистике».
+    </div>
+</div>
+
+<!-- АКТИВНОСТЬ: период + всего -->
+<div class="x5pwa-box">
+    <h3>Активность</h3>
+    <table class="x5pwa-activity-table">
+        <thead>
+            <tr>
+                <th>Показатель</th>
+                <th style="text-align:right">
+                    За период<br>
+                    <small style="color:#888;font-weight:400"><?= htmlspecialcharsbx($periodFrom) ?> — <?= htmlspecialcharsbx($periodTo) ?></small>
+                </th>
+                <th style="text-align:right">За всё время</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php
+            $activityRows = [
+                ['label' => 'Лекций прочитано',       'p' => (int)($stats['LECTURES_READ_PERIOD'] ?? 0),     't' => (int)$stats['LECTURES_READ']],
+                ['label' => 'Заданий выполнено',      'p' => (int)($stats['TASKS_DONE_PERIOD'] ?? 0),        't' => (int)$stats['TASKS_DONE']],
+                ['label' => 'Привычек отмечено',      'p' => (int)($stats['HABITS_DONE_PERIOD'] ?? 0),       't' => (int)$stats['HABITS_DONE']],
+                ['label' => 'Шагов подтверждено',     'p' => (int)($stats['STEPS_CONFIRMED_PERIOD'] ?? 0),   't' => (int)($steps['TOTAL_STEPS'] ?? 0)],
+                ['label' => 'Событий посещено',       'p' => (int)($stats['EVENTS_VISITED_PERIOD'] ?? 0),    't' => (int)($stats['EVENTS_VISITED'] ?? 0)],
+                ['label' => 'Событий подтверждено',   'p' => (int)($stats['EVENTS_CONFIRMED_PERIOD'] ?? 0),  't' => (int)($stats['EVENTS_CONFIRMED'] ?? 0)],
+            ];
+            foreach ($activityRows as $ar):
+            ?>
+                <tr>
+                    <td><?= htmlspecialcharsbx($ar['label']) ?></td>
+                    <td class="num"><b><?= number_format($ar['p'], 0, '', ' ') ?></b></td>
+                    <td class="num total"><?= number_format($ar['t'], 0, '', ' ') ?></td>
+                </tr>
+            <?php endforeach ?>
+        </tbody>
+    </table>
+    <div style="font-size:11px;color:#888;margin-top:12px">
+        «За период» — активности в диапазоне <?= htmlspecialcharsbx($periodFrom) ?> — <?= htmlspecialcharsbx($periodTo) ?>.
+        «За всё время» — суммарно по всем активностям пользователя (для шагов — по подтверждённым модератором).
     </div>
 </div>
 
@@ -263,7 +311,7 @@ $effColor = function (float $p): string {
 </div>
 
 <div class="x5pwa-box">
-    <h3>Итоги</h3>
+    <h3>Разбивка лекций (за всё время)</h3>
     <div class="x5pwa-grid">
         <div class="x5pwa-metric">
             <div class="x5pwa-metric-value"><?= (int)$stats['LECTURES_READ'] ?></div>
@@ -282,30 +330,8 @@ $effColor = function (float $p): string {
             <div class="x5pwa-metric-label">Зарядок</div>
         </div>
         <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= (int)$stats['TASKS_DONE'] ?></div>
-            <div class="x5pwa-metric-label">Заданий выполнено</div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= (int)$stats['HABITS_DONE'] ?></div>
-            <div class="x5pwa-metric-label">Привычек отмечено</div>
-        </div>
-        <div class="x5pwa-metric">
             <div class="x5pwa-metric-value"><?= (int)$stats['STREAK'] ?></div>
             <div class="x5pwa-metric-label">Дней подряд</div>
-        </div>
-    </div>
-</div>
-
-<div class="x5pwa-box">
-    <h3>Мероприятия</h3>
-    <div class="x5pwa-grid" style="grid-template-columns: repeat(2, 1fr)">
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= (int)($stats['EVENTS_VISITED'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Посещено</div>
-        </div>
-        <div class="x5pwa-metric">
-            <div class="x5pwa-metric-value"><?= (int)($stats['EVENTS_CONFIRMED'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Подтверждено</div>
         </div>
     </div>
 </div>
@@ -315,7 +341,7 @@ $effColor = function (float $p): string {
     <div class="x5pwa-grid" style="grid-template-columns: repeat(2, 1fr)">
         <div class="x5pwa-metric">
             <div class="x5pwa-metric-value x5pwa-green"><?= (int)($stats['REWARDS_BALANCE'] ?? 0) ?></div>
-            <div class="x5pwa-metric-label">Баланс</div>
+            <div class="x5pwa-metric-label">Баланс (за всё время)</div>
         </div>
         <div class="x5pwa-metric" style="display:flex;align-items:center;justify-content:center">
             <a href="x5_pwa_rewards.php?lang=<?= LANGUAGE_ID ?>&UID=<?= urlencode($uid) ?>"
@@ -325,7 +351,7 @@ $effColor = function (float $p): string {
 </div>
 
 <div class="x5pwa-box">
-    <h3>ШАГИ</h3>
+    <h3>ШАГИ (за всё время)</h3>
     <?php if (empty($steps)): ?>
         <div style="color:#888">Нет данных шагомера.</div>
     <?php else: ?>
@@ -382,7 +408,7 @@ foreach ($stats['BY_THEME'] as $code => $count) {
 ?>
 
 <div class="x5pwa-box">
-    <h3>Разбивка по направлениям</h3>
+    <h3>Разбивка по направлениям (за всё время)</h3>
     <?php if (!$themeRows): ?>
         <div style="color:#888">Нет прочитанных лекций по направлениям.</div>
     <?php else: ?>
@@ -408,7 +434,7 @@ foreach ($stats['BY_HABIT'] as $id => $count) {
 ?>
 
 <div class="x5pwa-box">
-    <h3>Привычки</h3>
+    <h3>Привычки (за всё время)</h3>
     <?php if (!$habitRows): ?>
         <div style="color:#888">Нет выполненных привычек.</div>
     <?php else: ?>
@@ -424,7 +450,7 @@ foreach ($stats['BY_HABIT'] as $id => $count) {
 </div>
 
 <div class="x5pwa-box">
-    <h3>Прочитанные лекции и зарядки</h3>
+    <h3>Прочитанные лекции и зарядки (за всё время)</h3>
     <?php if (!$stats['READS']): ?>
         <div style="color:#888">Нет записей.</div>
     <?php else: ?>
@@ -437,7 +463,7 @@ foreach ($stats['BY_HABIT'] as $id => $count) {
 </div>
 
 <div class="x5pwa-box">
-    <h3>Выполненные задания</h3>
+    <h3>Выполненные задания (за всё время)</h3>
     <?php if (!$stats['TASKS']): ?>
         <div style="color:#888">Нет записей.</div>
     <?php else: ?>

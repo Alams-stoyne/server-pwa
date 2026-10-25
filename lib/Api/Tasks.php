@@ -26,21 +26,22 @@ class Tasks
         Storage::touchBindingByUid($uid);
 
         // ─── Начисление награды ───
-        // Поддерживаем оба формата ID_TASK, которые встречаются у клиента:
+        // Поддерживаем оба формата ID_TASK:
         //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
-        //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты (как присылает клиент)
+        //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты
         //
-        // ИЗМЕНЕНО: результат awardTask сохраняется в $rewardPoints и
-        // попадает в ответ как REWARD_POINTS — ТОЛЬКО когда награда
-        // реально начислена в этом запросе (added === true). При повторном
-        // complete (гонка/retry) added === false — поля в ответе не будет,
-        // клиент не покажет «+N» второй раз.
+        // Дневной лимит на практике применяется в RewardsBuilder::award()
+        // через Settings::dailyTaskLimit(). При исчерпании лимита:
+        //   • яблоки НЕ начисляются (UF_REWARD_BALANCE не меняется);
+        //   • но запись в X5PwaTaskCompletions уже создана (прогресс сохранён);
+        //   • клиент получает REWARD_LIMIT_REACHED: true без REWARD_POINTS.
         $rewardPoints = 0;
+        $limitReached = false;
+        $limitInfo    = [];
 
         try {
             if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $k, $m)) {
                 $elementId = (int)$m[1];
-                $taskDate  = (string)$m[2];
                 $localDate = RewardsBuilder::userLocalDate($uid);
                 $info      = RewardsBuilder::resolveTaskInfo($elementId);
 
@@ -63,6 +64,12 @@ class Tasks
 
                     if (!empty($res['added'])) {
                         $rewardPoints = (int)($res['points'] ?? 0);
+                    } elseif (($res['reason'] ?? '') === 'DAILY_LIMIT_REACHED') {
+                        $limitReached = true;
+                        $limitInfo    = [
+                            'limit' => (int)($res['limit'] ?? 0),
+                            'count' => (int)($res['count'] ?? 0),
+                        ];
                     }
 
                     \Bitrix\Main\Diag\Debug::writeToFile(
@@ -74,7 +81,10 @@ class Tasks
                             $info['date'],
                             $localDate,
                             !empty($res['added']) ? 'yes' : 'no',
-                            !empty($res['already']) ? 'already' : (!empty($res['added']) ? 'ok' : 'skipped')
+                            (string)(
+                                $res['reason']
+                                ?? (!empty($res['already']) ? 'ALREADY' : (!empty($res['added']) ? 'OK' : 'SKIPPED'))
+                            )
                         ),
                         'Tasks::complete',
                         '/x5.pwa.log'
@@ -102,9 +112,13 @@ class Tasks
             'SERVER_DATETIME' => Storage::now()->format('Y-m-d\TH:i:s\Z'),
         ];
 
-        // Поле присутствует только если награда реально начислена
         if ($rewardPoints > 0) {
             $response['REWARD_POINTS'] = $rewardPoints;
+        }
+
+        if ($limitReached) {
+            $response['REWARD_LIMIT_REACHED'] = true;
+            $response['REWARD_LIMIT_INFO']    = $limitInfo;
         }
 
         return $response;

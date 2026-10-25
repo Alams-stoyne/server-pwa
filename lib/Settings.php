@@ -171,11 +171,8 @@ class Settings
         return self::getInt('last_dump_at', 0);
     }
 
-    // ── Период статистики (нестроковый, настраивается в админке) ──
+    // ── Период статистики ──
 
-    /**
-     * Дата старта периода статистики (YYYY-MM-DD). Пусто — не задан.
-     */
     public static function statsPeriodStart(): string
     {
         $raw = trim(self::get('stats_period_start', ''));
@@ -184,9 +181,6 @@ class Settings
         return $raw;
     }
 
-    /**
-     * Дата завершения периода статистики (YYYY-MM-DD). Пусто — не задан.
-     */
     public static function statsPeriodEnd(): string
     {
         $raw = trim(self::get('stats_period_end', ''));
@@ -195,10 +189,6 @@ class Settings
         return $raw;
     }
 
-    /**
-     * Проверяет, попадает ли дата (YYYY-MM-DD) в период.
-     * Если границы не заданы — считаем, что попадает.
-     */
     public static function isDateInPeriod(string $date): bool
     {
         $start = self::statsPeriodStart();
@@ -211,9 +201,6 @@ class Settings
 
     // ── Интервал пересчёта кешей статистики ──
 
-    /**
-     * Минимальный интервал между пересчётами RANK/EFFICIENCY (сек).
-     */
     public static function statsRecalcIntervalSec(): int
     {
         $v = self::getInt('stats_recalc_interval_sec', 3600);
@@ -238,7 +225,7 @@ class Settings
         return (time() - $last) >= self::statsRecalcIntervalSec();
     }
 
-    // ── Награды (дефолты; сами значения — в настройках модуля) ──
+    // ── Награды (дефолты) ──
 
     public static function rewardStepsSentPoints(): int
     {
@@ -253,5 +240,35 @@ class Settings
     public static function rewardReflectionPoints(): int
     {
         return max(0, self::getInt('reward_reflection_points', 2));
+    }
+
+    // ── Дневные лимиты наград (антифрод) ──
+    //
+    // 0 = без ограничений.
+    // Ограничение — по COUNT(*) в x5_pwa_reward_log за UF_LOCAL_DATE + UF_ACTION_TYPE.
+    // Применяется в RewardsBuilder::award() ДО добавления записи.
+
+    /** Максимум наград за общие лекции (general_lectures) в день. */
+    public static function dailyGeneralLectureLimit(): int
+    {
+        return max(0, self::getInt('daily_general_lecture_limit', 0));
+    }
+
+    /** Максимум наград за лекции по направлению (theme_lectures) в день. */
+    public static function dailyThemeLectureLimit(): int
+    {
+        return max(0, self::getInt('daily_theme_lecture_limit', 1));
+    }
+
+    /** Максимум наград за зарядку (charging) в день. */
+    public static function dailyChargingLimit(): int
+    {
+        return max(0, self::getInt('daily_charging_limit', 0));
+    }
+
+    /** Максимум наград за практики/задания (tasks) в день. */
+    public static function dailyTaskLimit(): int
+    {
+        return max(0, self::getInt('daily_task_limit', 2));
     }
 }

@@ -49,6 +49,11 @@ $saveFormFields = function () use ($request, $module_id): void {
         'reward_steps_sent_points',
         'reward_steps_approved_points',
         'reward_reflection_points',
+        // дневные лимиты
+        'daily_theme_lecture_limit',
+        'daily_general_lecture_limit',
+        'daily_charging_limit',
+        'daily_task_limit',
     ];
     foreach ($fields as $f) {
         Option::set($module_id, $f, (string)$request->getPost($f));
@@ -71,6 +76,18 @@ $saveFormFields = function () use ($request, $module_id): void {
 
     // Нормализация наград: целое ≥ 0
     foreach (['reward_steps_sent_points', 'reward_steps_approved_points', 'reward_reflection_points'] as $k) {
+        $v = (int)$request->getPost($k);
+        if ($v < 0) $v = 0;
+        Option::set($module_id, $k, (string)$v);
+    }
+
+    // Нормализация дневных лимитов: целое ≥ 0
+    foreach ([
+        'daily_theme_lecture_limit',
+        'daily_general_lecture_limit',
+        'daily_charging_limit',
+        'daily_task_limit',
+    ] as $k) {
         $v = (int)$request->getPost($k);
         if ($v < 0) $v = 0;
         Option::set($module_id, $k, (string)$v);
@@ -311,6 +328,12 @@ $recalcLastText   = $recalcLastAt > 0 ? date('d.m.Y H:i:s', $recalcLastAt) : '�
 $rewardStepsSent     = (int)Option::get($module_id, 'reward_steps_sent_points', 0);
 $rewardStepsApproved = (int)Option::get($module_id, 'reward_steps_approved_points', 5);
 $rewardReflection    = (int)Option::get($module_id, 'reward_reflection_points', 2);
+
+// ── Дневные лимиты наград (антифрод) ──
+$dailyThemeLectureLimit    = (int)Option::get($module_id, 'daily_theme_lecture_limit', 1);
+$dailyGeneralLectureLimit  = (int)Option::get($module_id, 'daily_general_lecture_limit', 0);
+$dailyChargingLimit        = (int)Option::get($module_id, 'daily_charging_limit', 0);
+$dailyTaskLimit            = (int)Option::get($module_id, 'daily_task_limit', 2);
 
 $aTabs = [
     ['DIV' => 'edit_vapid',  'TAB' => 'VAPID',      'TITLE' => 'VAPID ключи'],
@@ -653,6 +676,57 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
             <div class="adm-info-message" style="margin-top:6px">
                 Fallback, если у элемента ИБ «Настройки рефлексии» не задано свойство
                 <code>REWARD_POINTS</code>. Дефолт — <b>2</b>.
+            </div>
+        </td>
+    </tr>
+
+    <tr class="heading">
+        <td colspan="2">Дневные лимиты наград (антифрод)</td>
+    </tr>
+    <tr>
+        <td><label>Лекций по направлению в день:</label></td>
+        <td>
+            <input type="number" name="daily_theme_lecture_limit" min="0" step="1"
+                   value="<?= (int)$dailyThemeLectureLimit ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Максимум наград за лекции по направлению (theme_lectures) за один день.
+                <b>0 — без ограничений</b>. Дефолт — <b>1</b>. Блокирует накрутку через
+                смену направления: вторая лекция (по новому направлению) за тот же день
+                не даст яблок.
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Общих лекций в день:</label></td>
+        <td>
+            <input type="number" name="daily_general_lecture_limit" min="0" step="1"
+                   value="<?= (int)$dailyGeneralLectureLimit ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Максимум наград за общие лекции (general_lectures) за один день.
+                <b>0 — без ограничений</b> (дефолт, т.к. общие лекции не зависят от направления).
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Зарядок в день:</label></td>
+        <td>
+            <input type="number" name="daily_charging_limit" min="0" step="1"
+                   value="<?= (int)$dailyChargingLimit ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Максимум наград за зарядку (charging) за один день.
+                <b>0 — без ограничений</b> (дефолт, т.к. зарядка не зависит от направления).
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Практик (заданий) в день:</label></td>
+        <td>
+            <input type="number" name="daily_task_limit" min="0" step="1"
+                   value="<?= (int)$dailyTaskLimit ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Максимум наград за практики (tasks) за один день.
+                <b>0 — без ограничений</b>. Дефолт — <b>2</b>. Блокирует накрутку через
+                смену направления.
             </div>
         </td>
     </tr>
