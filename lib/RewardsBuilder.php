@@ -71,14 +71,13 @@ class RewardsBuilder
         // ─── Дневной лимит ───
         $limitCheck = self::checkDailyLimit($uid, $actionType, $localDate);
         if (!$limitCheck['ok']) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::log(
                 sprintf(
                     'DAILY_LIMIT_REACHED uid=%s type=%s id=%s date=%s count=%d limit=%d',
                     substr($uid, 0, 12) . '…', $actionType, $actionId,
                     $localDate, (int)$limitCheck['count'], (int)$limitCheck['limit']
                 ),
-                'RewardsBuilder::award',
-                '/x5.pwa.log'
+                'RewardsBuilder::award'
             );
             return [
                 'ok'      => true,
@@ -117,11 +116,10 @@ class RewardsBuilder
                     'balance' => self::getBalance($uid),
                 ];
             }
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'award failed uid=' . substr($uid, 0, 12) . '… type=' . $actionType
                 . ' id=' . $actionId . ': ' . $msg,
-                'RewardsBuilder::award',
-                '/x5.pwa.log'
+                'RewardsBuilder::award'
             );
             return [
                 'ok'      => false,
@@ -134,13 +132,12 @@ class RewardsBuilder
 
         Storage::incrementRewardBalance($uid, $points);
 
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        Settings::log(
             sprintf(
                 'award uid=%s type=%s id=%s points=+%d',
                 substr($uid, 0, 12) . '…', $actionType, $actionId, $points
             ),
-            'RewardsBuilder::award',
-            '/x5.pwa.log'
+            'RewardsBuilder::award'
         );
 
         return [
@@ -218,6 +215,11 @@ class RewardsBuilder
             $count = (int)($row['CNT'] ?? 0);
         } catch (\Throwable $e) {
             // При сбое БД не блокируем — лучше начислить, чем оставить юзера без награды
+            Settings::logError(
+                'checkDailyLimit DB error uid=' . substr($uid, 0, 12) . '… type=' . $actionType
+                . ' date=' . $localDate . ': ' . $e->getMessage(),
+                'RewardsBuilder::checkDailyLimit'
+            );
             return ['ok' => true];
         }
 

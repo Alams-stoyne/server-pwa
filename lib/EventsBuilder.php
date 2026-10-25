@@ -168,12 +168,6 @@ class EventsBuilder
 
     // ───────── Запись действий ─────────
 
-    /**
-     * @return array{
-     *   ok:bool, reason:?string, clickedAt:?string, already:bool,
-     *   confirmedAt:?string, rewardPoints:int, rewardText:string
-     * }
-     */
     public static function recordClick(string $uid, string $eventId): array
     {
         $uid     = trim($uid);
@@ -201,8 +195,6 @@ class EventsBuilder
 
         $existing = Storage::getEventAction($uid, $eventId);
 
-        // Строка уже есть и CLICKED_AT не пуст — НЕ перезаписываем,
-        // но возвращаем полный контекст, включая CONFIRMED_AT (если уже подтверждено).
         if ($existing && !empty($existing['UF_CLICKED_AT'])) {
             return [
                 'ok'           => true,
@@ -320,11 +312,10 @@ class EventsBuilder
                 $localDate
             );
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'award event failed uid=' . substr($uid, 0, 12) . '… event=' . $eventId
                 . ': ' . $e->getMessage(),
-                'EventsBuilder::recordConfirm',
-                '/x5.pwa.log'
+                'EventsBuilder::recordConfirm'
             );
         }
 

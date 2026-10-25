@@ -2,6 +2,7 @@
 namespace X5\Pwa\Api;
 
 use X5\Pwa\RewardsBuilder;
+use X5\Pwa\Settings;
 use X5\Pwa\Storage;
 
 class Reads
@@ -22,16 +23,17 @@ class Reads
         $id  = (string)($b['ID_LECTURE'] ?? '');
         if (!$uid || !$id) return ['RESULT' => 'ERROR'];
 
+        // TZ из тела — чтобы убрать рассинхрон при смене TZ в середине сессии
+        $tz = Storage::parseTzOffsetFromArray($b);
+        if ($tz !== null) {
+            Storage::saveUserTzOffsetMin($uid, $tz);
+        }
+
         Storage::addRead($uid, $id);
         Storage::touchBindingByUid($uid);
 
-        // ─── Начисление награды ───
-        // Источник (general / theme / charging) приходит из resolveLectureInfo —
-        // используется в RewardsBuilder для правильного actionType и лимитов:
-        //   lecture_general — общие лекции (без лимита по умолчанию);
-        //   lecture_theme   — лекции по направлению (лимит 1 в день по умолчанию);
-        //   charging        — зарядка (без лимита по умолчанию).
         $rewardPoints = 0;
+        $rewardType   = '';           // lecture_theme | lecture_general | charging
         $limitReached = false;
         $limitInfo    = [];
 
@@ -42,13 +44,20 @@ class Reads
                 $info      = RewardsBuilder::resolveLectureInfo($elementId);
 
                 if ($info === null) {
-                    \Bitrix\Main\Diag\Debug::writeToFile(
+                    Settings::log(
                         'lecture resolve null uid=' . substr($uid, 0, 12) . '… lectureId=' . $id
                         . ' elementId=' . $elementId,
-                        'Reads::add',
-                        '/x5.pwa.log'
+                        'Reads::add'
                     );
                 } else {
+                    // Маппинг source → REWARD_TYPE
+                    $source = (string)($info['source'] ?? '');
+                    $rewardType = match ($source) {
+                        'general'  => 'lecture_general',
+                        'charging' => 'charging',
+                        default    => 'lecture_theme',
+                    };
+
                     $res = RewardsBuilder::awardLecture(
                         $uid,
                         $elementId,
@@ -57,7 +66,7 @@ class Reads
                         (string)$info['title'],
                         (string)$info['date'],
                         $localDate,
-                        (string)($info['source'] ?? '')
+                        $source
                     );
 
                     if (!empty($res['added'])) {
@@ -65,18 +74,18 @@ class Reads
                     } elseif (($res['reason'] ?? '') === 'DAILY_LIMIT_REACHED') {
                         $limitReached = true;
                         $limitInfo    = [
+                            'type'  => $source,
                             'limit' => (int)($res['limit'] ?? 0),
                             'count' => (int)($res['count'] ?? 0),
-                            'type'  => (string)($info['source'] ?? ''),
                         ];
                     }
 
-                    \Bitrix\Main\Diag\Debug::writeToFile(
+                    Settings::log(
                         sprintf(
                             'lecture award uid=%s elementId=%d source=%s points=%d lectureDate=%s localDate=%s added=%s',
                             substr($uid, 0, 12) . '…',
                             $elementId,
-                            $info['source'] ?? '?',
+                            $source !== '' ? $source : '?',
                             (int)$info['points'],
                             $info['date'],
                             $localDate,
@@ -86,23 +95,20 @@ class Reads
                                     ? 'daily_limit'
                                     : (!empty($res['already']) ? 'already' : 'no'))
                         ),
-                        'Reads::add',
-                        '/x5.pwa.log'
+                        'Reads::add'
                     );
                 }
             } else {
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::log(
                     'lecture id not recognized uid=' . substr($uid, 0, 12) . '… lectureId=' . $id,
-                    'Reads::add',
-                    '/x5.pwa.log'
+                    'Reads::add'
                 );
             }
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'award on read failed uid=' . substr($uid, 0, 12) . '… id=' . $id
                 . ': ' . $e->getMessage(),
-                'Reads::add',
-                '/x5.pwa.log'
+                'Reads::add'
             );
         }
 
@@ -114,6 +120,9 @@ class Reads
 
         if ($rewardPoints > 0) {
             $response['REWARD_POINTS'] = $rewardPoints;
+            if ($rewardType !== '') {
+                $response['REWARD_TYPE'] = $rewardType;
+            }
         }
 
         if ($limitReached) {

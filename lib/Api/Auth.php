@@ -2,6 +2,7 @@
 namespace X5\Pwa\Api;
 
 use X5\Pwa\RewardsBuilder;
+use X5\Pwa\Settings;
 use X5\Pwa\Storage;
 use X5\Pwa\RateLimit;
 
@@ -22,10 +23,9 @@ class Auth
         }
 
         if (Storage::isBlocked($uid)) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::log(
                 'BLOCKED uid=' . substr($uid, 0, 12) . '…',
-                'Auth::blocked',
-                '/x5.pwa.log'
+                'Auth::blocked'
             );
             return [
                 'RESULT'  => 'BLOCKED',
@@ -63,7 +63,7 @@ class Auth
         if (!$uidBinding) Storage::saveBinding($uid, $deviceId, $deviceCreatedAt);
         else              Storage::touchBinding((int)$uidBinding['ID']);
 
-        // Таймзона
+        // TZ
         $tz = Storage::parseTzOffsetFromArray($body);
         if ($tz !== null) {
             Storage::saveUserTzOffsetMin($uid, $tz);
@@ -74,9 +74,11 @@ class Auth
         $consent       = Storage::getConsent($uid);
         $selectedHabit = Storage::getSelectedHabit($uid);
 
+        // Локальная дата пользователя (по сохранённому TZ)
+        $localDate = RewardsBuilder::userLocalDate($uid);
+        $limitsUsed = Config::usedCounters($uid, $localDate);
+
         // ─── Склеиваем STATE с серверными полями ───
-        //   CONSENT, HABIT_SELECTED, REWARDS — сервер-authoritative,
-        //   добавляются только на чтении, не пишутся через POST /state.
         $state = is_array($storedState) ? $storedState : [];
 
         $state['HABIT_SELECTED'] = $selectedHabit;
@@ -98,6 +100,15 @@ class Auth
             'READS'   => Storage::getReads($uid),
             'TASKS'   => Storage::getTasks($uid),
             'HABITS'  => empty($habits) ? (object)[] : $habits,
+
+            // Персональные счётчики использованных наград за локальный день
+            'LIMITS_USED' => [
+                'LOCAL_DATE'      => $localDate,
+                'LECTURE_THEME'   => (int)$limitsUsed['LECTURE_THEME'],
+                'LECTURE_GENERAL' => (int)$limitsUsed['LECTURE_GENERAL'],
+                'CHARGING'        => (int)$limitsUsed['CHARGING'],
+                'TASK'            => (int)$limitsUsed['TASK'],
+            ],
         ];
     }
 }

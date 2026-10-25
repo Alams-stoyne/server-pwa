@@ -92,10 +92,9 @@ class Storage
 
         $dc::update((int)$row['ID'], ['UF_TZ_OFFSET_MIN' => $offsetMin]);
 
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        Settings::log(
             'uid=' . substr($uid, 0, 12) . '… tz_offset_min: ' . var_export($oldInt, true) . ' → ' . $offsetMin,
-            'Storage::saveUserTzOffsetMin',
-            '/x5.pwa.log'
+            'Storage::saveUserTzOffsetMin'
         );
     }
 
@@ -171,10 +170,9 @@ class Storage
 
         self::deleteSubscription($uid);
 
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        Settings::log(
             'block uid=' . substr($uid, 0, 12) . '… reason="' . $reason . '"',
-            'Storage::blockUser',
-            '/x5.pwa.log'
+            'Storage::blockUser'
         );
 
         return $res->isSuccess();
@@ -195,10 +193,9 @@ class Storage
             'UF_BLOCK_REASON' => '',
         ]);
 
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        Settings::log(
             'unblock uid=' . substr($uid, 0, 12) . '…',
-            'Storage::unblockUser',
-            '/x5.pwa.log'
+            'Storage::unblockUser'
         );
 
         return $res->isSuccess();
@@ -299,11 +296,11 @@ class Storage
             }
         }
 
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        // Удаление — критическое действие (аудит), пишем всегда.
+        Settings::logError(
             'delete uid=' . substr($uid, 0, 12) . '… deleted='
                 . json_encode($deleted, JSON_UNESCAPED_UNICODE),
-            'Storage::deleteUser',
-            '/x5.pwa.log'
+            'Storage::deleteUser'
         );
 
         return $deleted;
@@ -488,9 +485,6 @@ class Storage
         return $row ?: null;
     }
 
-    /**
-     * Total-метрики за всё время (legacy). Оставлен для обратной совместимости.
-     */
     public static function getStatsForUids(array $uids): array
     {
         if (!$uids) return [];
@@ -526,19 +520,6 @@ class Storage
         return $out;
     }
 
-    /**
-     * Количественные метрики активности за период (все действия: лекции, задания,
-     * привычки, шаги, события). 5 SQL-запросов с GROUP BY.
-     *
-     * Семантика периода:
-     *   • лекции/задания/привычки/события — по серверному datetime (UF_*_AT);
-     *   • шаги — по локальной дате пользователя (UF_LOCAL_DATE), только 'Y'.
-     *
-     * @return array<string, array{
-     *   lectures:int, tasks:int, habits:int, steps:int,
-     *   events_visited:int, events_confirmed:int
-     * }>
-     */
     public static function getPeriodStatsForUids(array $uids, string $from, string $to): array
     {
         if (!$uids) return [];
@@ -548,7 +529,6 @@ class Storage
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)
             || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)
             || $from > $to) {
-            // fallback: без периода (total) — чтобы не падать
             $total = self::getStatsForUids($uids);
             $out = [];
             foreach ($uids as $u) {
@@ -580,7 +560,6 @@ class Storage
         $fromDaySafe = $sqlHelper->forSql($from);
         $toDaySafe   = $sqlHelper->forSql($to);
 
-        // 1. Лекции
         try {
             $rows = $conn->query(
                 "SELECT UF_UID, COUNT(*) AS C
@@ -596,7 +575,6 @@ class Storage
             }
         } catch (\Throwable $e) {}
 
-        // 2. Задания
         try {
             $rows = $conn->query(
                 "SELECT UF_UID, COUNT(*) AS C
@@ -612,7 +590,6 @@ class Storage
             }
         } catch (\Throwable $e) {}
 
-        // 3. Привычки
         try {
             $rows = $conn->query(
                 "SELECT UF_UID, COUNT(*) AS C
@@ -628,7 +605,6 @@ class Storage
             }
         } catch (\Throwable $e) {}
 
-        // 4. Шаги (подтверждённые, по локальной дате пользователя)
         try {
             $rows = $conn->query(
                 "SELECT UF_UID, COALESCE(SUM(UF_STEPS), 0) AS S
@@ -645,7 +621,6 @@ class Storage
             }
         } catch (\Throwable $e) {}
 
-        // 5. События (клик и подтверждение в окне периода)
         try {
             $rows = $conn->query(
                 "SELECT UF_UID,
@@ -1117,7 +1092,8 @@ class Storage
     public static function setRateBucket(string $key, array $timestamps): void
     {
         $dc = self::dataClass('X5PwaRateLimits');
-        $row = $dc->getList(['filter' => ['=UF_KEY' => $key], 'limit' => 1])->fetch();
+        // ← ИСПРАВЛЕНО: было $dc->getList(...) — фатал, должно быть $dc::getList(...)
+        $row = $dc::getList(['filter' => ['=UF_KEY' => $key], 'limit' => 1])->fetch();
         $value = json_encode(array_values($timestamps));
         if ($row) $dc::update($row['ID'], ['UF_TIMESTAMPS' => $value]);
         else $dc::add(['UF_KEY' => $key, 'UF_TIMESTAMPS' => $value]);
@@ -1154,10 +1130,9 @@ class Storage
                 'UF_SOURCE'    => mb_substr($source, 0, 32),
             ]);
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'consent log failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
-                'Storage::saveConsent',
-                '/x5.pwa.log'
+                'Storage::saveConsent'
             );
         }
 
@@ -1456,11 +1431,10 @@ class Storage
                  WHERE UF_UID = '{$safeUid}'"
             );
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'increment failed uid=' . substr($uid, 0, 12) . '… delta=' . $delta
                 . ': ' . $e->getMessage(),
-                'Storage::incrementRewardBalance',
-                '/x5.pwa.log'
+                'Storage::incrementRewardBalance'
             );
         }
     }
@@ -1628,10 +1602,9 @@ class Storage
                 $saveRow((string)$code, (int)$points);
             }
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'saveDailyApples failed date=' . $date . ': ' . $e->getMessage(),
-                'Storage::saveDailyApples',
-                '/x5.pwa.log'
+                'Storage::saveDailyApples'
             );
         }
     }
@@ -1736,10 +1709,9 @@ class Storage
             $rows = $conn->query($sql)->fetchAll();
             return array_values(array_map(fn($r) => (string)$r['UF_UID'], $rows));
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'getActiveUidsForStats failed: ' . $e->getMessage(),
-                'Storage::getActiveUidsForStats',
-                '/x5.pwa.log'
+                'Storage::getActiveUidsForStats'
             );
             return [];
         }
@@ -1843,10 +1815,9 @@ class Storage
 
                 $conn->queryExecute($sql);
             } catch (\Throwable $e) {
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::logError(
                     'bulkUpdateStatsCache failed: ' . $e->getMessage(),
-                    'Storage::bulkUpdateStatsCache',
-                    '/x5.pwa.log'
+                    'Storage::bulkUpdateStatsCache'
                 );
             }
         }

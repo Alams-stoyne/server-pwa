@@ -220,10 +220,9 @@ class SupportBuilder
         ]);
         if (!$res->isSuccess()) {
             foreach ($fileIds as $f) \CFile::Delete($f);
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'guest ticket add failed: ' . implode('; ', $res->getErrorMessages()),
-                'SupportBuilder::createGuestTicket',
-                '/x5.pwa.log'
+                'SupportBuilder::createGuestTicket'
             );
             return ['RESULT' => 'SAVE_ERROR', 'MESSAGE' => 'Не удалось создать тикет.'];
         }
@@ -245,15 +244,14 @@ class SupportBuilder
             return ['RESULT' => 'SAVE_ERROR', 'MESSAGE' => 'Не удалось сохранить сообщение.'];
         }
 
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        Settings::log(
             sprintf(
                 'guest ticket #%d device=%s auth_error=%s uid=%s',
                 $ticketId, $deviceId,
                 $authError !== '' ? $authError : '-',
                 $uid !== '' ? substr($uid, 0, 12) . '…' : '-'
             ),
-            'SupportBuilder::createGuestTicket',
-            '/x5.pwa.log'
+            'SupportBuilder::createGuestTicket'
         );
 
         return [
@@ -501,10 +499,9 @@ class SupportBuilder
         if (!$isGuest && !empty($ticket['UF_UID'])) {
             self::pushUser((string)$ticket['UF_UID'], $ticketId, (string)($ticket['UF_SUBJECT'] ?? ''));
         } else {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::log(
                 'guest ticket #' . $ticketId . ' — push skipped (no auth)',
-                'SupportBuilder::addAdminMessage',
-                '/x5.pwa.log'
+                'SupportBuilder::addAdminMessage'
             );
         }
 
@@ -1002,13 +999,6 @@ class SupportBuilder
 
     // ───────── Push ─────────
 
-    /**
-     * Отправка push-уведомления пользователю об ответе поддержки.
-     *
-     * ЕДИНСТВЕННАЯ КОПИЯ МЕТОДА. Если случайно появится вторая — PHP
-     * упадёт с "Cannot redeclare". При правках — только заменять тело,
-     * не добавлять копию.
-     */
     private static function pushUser(string $uid, int $ticketId, string $subject): void
     {
         $url    = self::buildSupportUrl($ticketId);
@@ -1027,10 +1017,9 @@ class SupportBuilder
             $sub = Storage::getSubscription($uid);
             if (!$sub) {
                 self::logPushHistory($uid, $title, $body, $url, 'no_sub');
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::log(
                     'skip: no subscription uid=' . substr($uid, 0, 12) . '… ticket=' . $ticketId,
-                    'SupportBuilder::pushUser',
-                    '/x5.pwa.log'
+                    'SupportBuilder::pushUser'
                 );
                 return;
             }
@@ -1050,13 +1039,12 @@ class SupportBuilder
                 $status = (string)($r['statusCode'] ?? '201');
                 self::logPushHistory($uid, $title, $body, $url, $status);
 
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::log(
                     sprintf(
                         'sent uid=%s ticket=%d status=%s url=%s',
                         substr($uid, 0, 12) . '…', $ticketId, $status, $url
                     ),
-                    'SupportBuilder::pushUser',
-                    '/x5.pwa.log'
+                    'SupportBuilder::pushUser'
                 );
                 return;
             }
@@ -1068,30 +1056,25 @@ class SupportBuilder
                 self::logPushHistory($uid, $title, $body, $url, 'error');
             }
 
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::log(
                 sprintf(
                     'failed uid=%s ticket=%d status=%s message=%s',
                     substr($uid, 0, 12) . '…', $ticketId,
                     (string)($r['statusCode'] ?? '-'),
                     (string)($r['message'] ?? '-')
                 ),
-                'SupportBuilder::pushUser',
-                '/x5.pwa.log'
+                'SupportBuilder::pushUser'
             );
         } catch (\Throwable $e) {
             self::logPushHistory($uid, $title, $body, $url, 'error');
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'push exception uid=' . substr($uid, 0, 12) . '… ticket=' . $ticketId
                 . ': ' . $e->getMessage(),
-                'SupportBuilder::pushUser',
-                '/x5.pwa.log'
+                'SupportBuilder::pushUser'
             );
         }
     }
 
-    /**
-     * URL для push-уведомления. По умолчанию /support/tickets/{ID}.
-     */
     private static function buildSupportUrl(int $ticketId): string
     {
         $tpl = (string)Settings::get('support_push_url_template', '');
@@ -1100,11 +1083,6 @@ class SupportBuilder
         return str_replace('{ID}', (string)$ticketId, $tpl);
     }
 
-    /**
-     * Записать факт отправки push в историю.
-     *
-     * ЕДИНСТВЕННАЯ КОПИЯ МЕТОДА. При правках — заменять тело, не копировать.
-     */
     private static function logPushHistory(
         string $uid,
         string $title,
@@ -1122,10 +1100,9 @@ class SupportBuilder
                 'status' => mb_substr($status, 0, 32),
             ]);
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'history log failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(),
-                'SupportBuilder::logPushHistory',
-                '/x5.pwa.log'
+                'SupportBuilder::logPushHistory'
             );
         }
     }

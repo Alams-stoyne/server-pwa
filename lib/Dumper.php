@@ -3,8 +3,6 @@ namespace X5\Pwa;
 
 class Dumper
 {
-    private const DEBUG = true;
-
     private const STATS_INTERVAL_DEFAULT = 600;
     private const STATS_INTERVAL_MIN     = 60;
 
@@ -14,12 +12,12 @@ class Dumper
 
     private static function log(string $msg, string $label = 'Dumper debug'): void
     {
-        if (!self::DEBUG) return;
-        \Bitrix\Main\Diag\Debug::writeToFile(
-            '[' . date('H:i:s') . '] ' . $msg,
-            $label,
-            '/x5.pwa.log'
-        );
+        Settings::log('[' . date('H:i:s') . '] ' . $msg, $label);
+    }
+
+    private static function logError(string $msg, string $label = 'Dumper error'): void
+    {
+        Settings::logError('[' . date('H:i:s') . '] ' . $msg, $label);
     }
 
     private static function ourIblockIds(): array
@@ -69,7 +67,7 @@ class Dumper
             Settings::set('regen_dirty', '0');
         } catch (\Throwable $e) {
             Settings::set('regen_dirty', '1');
-            self::log('  → REGEN FAILED: ' . $e->getMessage(), 'Dumper::onElementSave');
+            self::logError('  → REGEN FAILED: ' . $e->getMessage(), 'Dumper::onElementSave');
         } finally {
             self::$inProgress = false;
         }
@@ -102,7 +100,7 @@ class Dumper
         try {
             $globalStats = StatsBuilder::buildGlobal();
         } catch (\Throwable $e) {
-            self::log('StatsBuilder FAILED: ' . $e->getMessage(), 'Dumper::regenerateStats');
+            self::logError('StatsBuilder FAILED: ' . $e->getMessage(), 'Dumper::regenerateStats');
             return ['ok' => false, 'error' => $e->getMessage()];
         }
 
@@ -118,7 +116,7 @@ class Dumper
             return ['ok' => true, 'key' => $r['key'], 'elapsed' => $elapsed];
         }
 
-        self::log("----- regenerateStats END FAIL: {$r['message']} -----");
+        self::logError("----- regenerateStats END FAIL: {$r['message']} -----");
         return ['ok' => false, 'error' => $r['message'], 'elapsed' => $elapsed];
     }
 
@@ -190,10 +188,6 @@ class Dumper
             self::log(sprintf('RAW %s: count=%d', $bucket, count($items)));
         }
 
-        // ← ИЗМЕНЕНО: fallback на хардкод только если IB «Направления» не настроен.
-        // Если IB настроен, но все темы деактивированы — работаем с пустым списком
-        // (в дамп пойдут только general/charging, а темы будут только «исторические»
-        // из $extraThemesLectures/$extraThemesTasks — это осознанно, см. ниже).
         $themes = ThemesResolver::getAllCodes();
         if (!$themes && !ThemesResolver::isConfigured()) {
             $themes = ['energy', 'antistress', 'body', 'balance'];
@@ -295,9 +289,21 @@ class Dumper
                 'START' => Settings::statsPeriodStart(),
                 'END'   => Settings::statsPeriodEnd(),
             ];
-            $byCategory['config'] = 7;
+            // Правила дневных лимитов (антифрод).
+            // Клиент кэширует на 1 час; при изменении в настройках модуля —
+            // ставится флаг limits_rules_dirty, Scheduler пересобирает дампы.
+            $map['config/limits_rules.json'] = [
+                'UPDATED_AT' => (new \Bitrix\Main\Type\DateTime())->toString(),
+                'LIMITS'     => [
+                    'lecture_theme'   => ['limit' => Settings::dailyThemeLectureLimit()],
+                    'lecture_general' => ['limit' => Settings::dailyGeneralLectureLimit()],
+                    'charging'        => ['limit' => Settings::dailyChargingLimit()],
+                    'task'            => ['limit' => Settings::dailyTaskLimit()],
+                ],
+            ];
+            $byCategory['config'] = 8;
         } catch (\Throwable $e) {
-            self::log('config/* FAILED: ' . $e->getMessage(), 'Dumper config');
+            self::logError('config/* FAILED: ' . $e->getMessage(), 'Dumper config');
         }
 
         try {
@@ -315,14 +321,14 @@ class Dumper
                 $eventDates ? $eventDates[count($eventDates) - 1] : '-'
             ));
         } catch (\Throwable $e) {
-            self::log('events/* FAILED: ' . $e->getMessage(), 'Dumper events');
+            self::logError('events/* FAILED: ' . $e->getMessage(), 'Dumper events');
         }
 
         try {
             $map['stats/global.json'] = StatsBuilder::buildGlobal();
             $byCategory['stats'] = 1;
         } catch (\Throwable $e) {
-            self::log('stats/global.json FAILED: ' . $e->getMessage(), 'Dumper stats');
+            self::logError('stats/global.json FAILED: ' . $e->getMessage(), 'Dumper stats');
         }
 
         $sent = 0; $failed = 0; $errors = [];
@@ -345,7 +351,7 @@ class Dumper
             } else {
                 $failed++;
                 $errors[] = $key . ': ' . $r['message'];
-                self::log("UPLOAD FAIL $key: {$r['message']}");
+                self::logError("UPLOAD FAIL $key: {$r['message']}");
 
                 $localPath = S3::localCachePath(($prefix ? $prefix . '/' : '') . $key);
                 @mkdir(dirname($localPath), 0775, true);
@@ -367,11 +373,12 @@ class Dumper
             }
             $byCategory['steps'] = (int)(($stepRes['sent'] ?? 0) + ($stepRes['failed'] ?? 0));
         } catch (\Throwable $e) {
-            self::log('step leaderboards FAILED: ' . $e->getMessage(), 'Dumper steps');
+            self::logError('step leaderboards FAILED: ' . $e->getMessage(), 'Dumper steps');
         }
 
         Settings::touchDumpTime();
         Settings::set('last_stats_at', (string)(time() * 1000));
+        Settings::clearLimitsRulesDirty();
 
         $elapsed = round(microtime(true) - $startTime, 2);
         self::log("===== regenerateAll END sent=$sent failed=$failed elapsed={$elapsed}s =====");

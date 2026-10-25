@@ -2,6 +2,7 @@
 namespace X5\Pwa\Api;
 
 use X5\Pwa\RewardsBuilder;
+use X5\Pwa\Settings;
 use X5\Pwa\Storage;
 
 class Tasks
@@ -22,19 +23,15 @@ class Tasks
         $k   = (string)($b['ID_TASK'] ?? '');
         if (!$uid || !$k) return ['RESULT' => 'ERROR'];
 
+        // TZ из тела
+        $tz = Storage::parseTzOffsetFromArray($b);
+        if ($tz !== null) {
+            Storage::saveUserTzOffsetMin($uid, $tz);
+        }
+
         Storage::addTask($uid, $k);
         Storage::touchBindingByUid($uid);
 
-        // ─── Начисление награды ───
-        // Поддерживаем оба формата ID_TASK:
-        //   • "{elementId}-{YYYY-MM-DD}"          — «чистый» (из CDN)
-        //   • "{YYYY-MM-DD}:{elementId}-{YYYY-MM-DD}" — с префиксом даты
-        //
-        // Дневной лимит на практике применяется в RewardsBuilder::award()
-        // через Settings::dailyTaskLimit(). При исчерпании лимита:
-        //   • яблоки НЕ начисляются (UF_REWARD_BALANCE не меняется);
-        //   • но запись в X5PwaTaskCompletions уже создана (прогресс сохранён);
-        //   • клиент получает REWARD_LIMIT_REACHED: true без REWARD_POINTS.
         $rewardPoints = 0;
         $limitReached = false;
         $limitInfo    = [];
@@ -46,11 +43,10 @@ class Tasks
                 $info      = RewardsBuilder::resolveTaskInfo($elementId);
 
                 if ($info === null) {
-                    \Bitrix\Main\Diag\Debug::writeToFile(
+                    Settings::log(
                         'task resolve null uid=' . substr($uid, 0, 12) . '… taskId=' . $k
                         . ' elementId=' . $elementId,
-                        'Tasks::complete',
-                        '/x5.pwa.log'
+                        'Tasks::complete'
                     );
                 } else {
                     $res = RewardsBuilder::awardTask(
@@ -72,7 +68,7 @@ class Tasks
                         ];
                     }
 
-                    \Bitrix\Main\Diag\Debug::writeToFile(
+                    Settings::log(
                         sprintf(
                             'task award uid=%s elementId=%d points=%d taskDate=%s localDate=%s added=%s reason=%s',
                             substr($uid, 0, 12) . '…',
@@ -86,23 +82,20 @@ class Tasks
                                 ?? (!empty($res['already']) ? 'ALREADY' : (!empty($res['added']) ? 'OK' : 'SKIPPED'))
                             )
                         ),
-                        'Tasks::complete',
-                        '/x5.pwa.log'
+                        'Tasks::complete'
                     );
                 }
             } else {
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::log(
                     'task id not recognized uid=' . substr($uid, 0, 12) . '… taskId=' . $k,
-                    'Tasks::complete',
-                    '/x5.pwa.log'
+                    'Tasks::complete'
                 );
             }
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'award on task complete failed uid=' . substr($uid, 0, 12) . '… k=' . $k
                 . ': ' . $e->getMessage(),
-                'Tasks::complete',
-                '/x5.pwa.log'
+                'Tasks::complete'
             );
         }
 
@@ -114,6 +107,7 @@ class Tasks
 
         if ($rewardPoints > 0) {
             $response['REWARD_POINTS'] = $rewardPoints;
+            $response['REWARD_TYPE']   = 'task';
         }
 
         if ($limitReached) {

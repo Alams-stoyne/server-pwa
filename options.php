@@ -18,7 +18,7 @@ $isPost  = $request->isPost() && check_bitrix_sessid();
 $message = null;
 $error   = null;
 
-// ── Период статистики — читаем ДО сохранения, валидируем отдельно ──
+// ── Период статистики — читаем ДО сохранения ──
 $periodStartRaw = trim((string)$request->getPost('stats_period_start'));
 $periodEndRaw   = trim((string)$request->getPost('stats_period_end'));
 $periodOk       = true;
@@ -45,11 +45,9 @@ $saveFormFields = function () use ($request, $module_id): void {
         's3_access_key', 's3_prefix', 's3_path_style',
         'cdn_base', 'cdn_strip_bucket', 'cdn_strip_upload',
         'allowed_origins',
-        // Дефолты наград (если не заданы в ИБ)
         'reward_steps_sent_points',
         'reward_steps_approved_points',
         'reward_reflection_points',
-        // дневные лимиты
         'daily_theme_lecture_limit',
         'daily_general_lecture_limit',
         'daily_charging_limit',
@@ -59,38 +57,61 @@ $saveFormFields = function () use ($request, $module_id): void {
         Option::set($module_id, $f, (string)$request->getPost($f));
     }
 
+    // debug_log_enabled — явная нормализация Y/N
+    Option::set(
+        $module_id,
+        'debug_log_enabled',
+        $request->getPost('debug_log_enabled') === 'Y' ? 'Y' : 'N'
+    );
+
     $secret = (string)$request->getPost('s3_secret_key');
     if ($secret !== '') {
         Option::set($module_id, 's3_secret_key', $secret);
     }
 
-    // Интервал обновления stats/global.json на CDN (сек)
     $iv = (int)$request->getPost('stats_interval_sec');
     if ($iv < 60) $iv = 600;
     Option::set($module_id, 'stats_interval_sec', (string)$iv);
 
-    // Интервал пересчёта кешей RANK/EFFICIENCY/HABITS_DAYS (сек)
     $recalcIv = (int)$request->getPost('stats_recalc_interval_sec');
     if ($recalcIv < 60) $recalcIv = 3600;
     Option::set($module_id, 'stats_recalc_interval_sec', (string)$recalcIv);
 
-    // Нормализация наград: целое ≥ 0
     foreach (['reward_steps_sent_points', 'reward_steps_approved_points', 'reward_reflection_points'] as $k) {
         $v = (int)$request->getPost($k);
         if ($v < 0) $v = 0;
         Option::set($module_id, $k, (string)$v);
     }
 
-    // Нормализация дневных лимитов: целое ≥ 0
-    foreach ([
+    // Лимиты: сохраняем и сравниваем старые/новые — если изменились,
+    // ставим флаг, чтобы Scheduler пересобрал дампы (config/limits_rules.json)
+    // вне очереди (без ожидания 24 часов).
+    $limitsKeys = [
         'daily_theme_lecture_limit',
         'daily_general_lecture_limit',
         'daily_charging_limit',
         'daily_task_limit',
-    ] as $k) {
+    ];
+    $oldLimits = [];
+    foreach ($limitsKeys as $k) {
+        $oldLimits[$k] = Option::get($module_id, $k, '');
+    }
+
+    foreach ($limitsKeys as $k) {
         $v = (int)$request->getPost($k);
         if ($v < 0) $v = 0;
         Option::set($module_id, $k, (string)$v);
+    }
+
+    $changed = false;
+    foreach ($limitsKeys as $k) {
+        if ((string)Option::get($module_id, $k, '') !== (string)$oldLimits[$k]) {
+            $changed = true;
+            break;
+        }
+    }
+    if ($changed) {
+        \X5\Pwa\Settings::markLimitsRulesDirty();
     }
 };
 
@@ -117,10 +138,23 @@ if ($isPost && $request->getPost('restore') !== null) {
 
 if ($isPost) $saveFormFields();
 
-// Период сохраняем отдельно — только если валиден
 if ($isPost && $periodOk) {
     Option::set($module_id, 'stats_period_start', $periodStartRaw);
     Option::set($module_id, 'stats_period_end',   $periodEndRaw);
+}
+
+// ─── Очистка лога ───
+if ($isPost && $request->getPost('clear_log') !== null) {
+    $logPath = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/') . '/x5.pwa.log';
+    if (is_file($logPath)) {
+        if (@unlink($logPath)) {
+            $message = 'Лог /x5.pwa.log очищен.';
+        } else {
+            $error = 'Не удалось удалить /x5.pwa.log (проверьте права на файл).';
+        }
+    } else {
+        $message = 'Файл /x5.pwa.log отсутствует — очищать нечего.';
+    }
 }
 
 if ($isPost && $request->getPost('regenerate_vapid') !== null) {
@@ -195,7 +229,6 @@ if ($isPost && $request->getPost('rebuild_stats') !== null) {
     }
 }
 
-// ─── Пересчитать кеши RANK / EFFICIENCY / HABITS_DAYS ───
 if ($isPost && $request->getPost('recalc_caches') !== null) {
     try {
         $r = \X5\Pwa\StatsBuilder::recalcAllStats();
@@ -220,7 +253,6 @@ if ($isPost && $request->getPost('resetup_iblock') !== null) {
     }
 }
 
-// ─── Пересоздать admin-обёртки ───
 if ($isPost && $request->getPost('resetup_admin') !== null) {
     try {
         $report = \X5\Pwa\AdminSetup::install();
@@ -316,7 +348,6 @@ $statsWaitSec    = $lastStatsAt > 0
 $lastDumpAt      = (int)Option::get($module_id, 'last_dump_at', 0);
 $lastDumpAtText  = $lastDumpAt > 0 ? date('d.m.Y H:i:s', (int)($lastDumpAt / 1000)) : '—';
 
-// ── Период и пересчёт кешей ──
 $statsPeriodStart = $opt('stats_period_start');
 $statsPeriodEnd   = $opt('stats_period_end');
 $recalcInterval   = (int)Option::get($module_id, 'stats_recalc_interval_sec', 3600);
@@ -324,16 +355,24 @@ if ($recalcInterval < 60) $recalcInterval = 3600;
 $recalcLastAt     = (int)Option::get($module_id, 'stats_recalc_last_at', 0);
 $recalcLastText   = $recalcLastAt > 0 ? date('d.m.Y H:i:s', $recalcLastAt) : '—';
 
-// ── Дефолты наград ──
 $rewardStepsSent     = (int)Option::get($module_id, 'reward_steps_sent_points', 0);
 $rewardStepsApproved = (int)Option::get($module_id, 'reward_steps_approved_points', 5);
 $rewardReflection    = (int)Option::get($module_id, 'reward_reflection_points', 2);
 
-// ── Дневные лимиты наград (антифрод) ──
 $dailyThemeLectureLimit    = (int)Option::get($module_id, 'daily_theme_lecture_limit', 1);
 $dailyGeneralLectureLimit  = (int)Option::get($module_id, 'daily_general_lecture_limit', 0);
 $dailyChargingLimit        = (int)Option::get($module_id, 'daily_charging_limit', 0);
 $dailyTaskLimit            = (int)Option::get($module_id, 'daily_task_limit', 2);
+
+// Логирование
+$debugLogEnabled = $opt('debug_log_enabled') === 'Y';
+$logPath         = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/') . '/x5.pwa.log';
+$logSize         = is_file($logPath) ? (int)filesize($logPath) : 0;
+$logSizeText     = $logSize > 0
+    ? ($logSize >= 1024 * 1024
+        ? number_format($logSize / 1024 / 1024, 2, '.', ' ') . ' МБ'
+        : number_format($logSize / 1024, 1, '.', ' ') . ' КБ')
+    : '0 КБ';
 
 $aTabs = [
     ['DIV' => 'edit_vapid',  'TAB' => 'VAPID',      'TITLE' => 'VAPID ключи'],
@@ -689,10 +728,9 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
             <input type="number" name="daily_theme_lecture_limit" min="0" step="1"
                    value="<?= (int)$dailyThemeLectureLimit ?>" style="width:120px">
             <div class="adm-info-message" style="margin-top:6px">
-                Максимум наград за лекции по направлению (theme_lectures) за один день.
+                Максимум наград за лекции по направлению за один день.
                 <b>0 — без ограничений</b>. Дефолт — <b>1</b>. Блокирует накрутку через
-                смену направления: вторая лекция (по новому направлению) за тот же день
-                не даст яблок.
+                смену направления.
             </div>
         </td>
     </tr>
@@ -702,8 +740,8 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
             <input type="number" name="daily_general_lecture_limit" min="0" step="1"
                    value="<?= (int)$dailyGeneralLectureLimit ?>" style="width:120px">
             <div class="adm-info-message" style="margin-top:6px">
-                Максимум наград за общие лекции (general_lectures) за один день.
-                <b>0 — без ограничений</b> (дефолт, т.к. общие лекции не зависят от направления).
+                Максимум наград за общие лекции за один день.
+                <b>0 — без ограничений</b>.
             </div>
         </td>
     </tr>
@@ -713,8 +751,8 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
             <input type="number" name="daily_charging_limit" min="0" step="1"
                    value="<?= (int)$dailyChargingLimit ?>" style="width:120px">
             <div class="adm-info-message" style="margin-top:6px">
-                Максимум наград за зарядку (charging) за один день.
-                <b>0 — без ограничений</b> (дефолт, т.к. зарядка не зависит от направления).
+                Максимум наград за зарядку за один день.
+                <b>0 — без ограничений</b>.
             </div>
         </td>
     </tr>
@@ -724,9 +762,17 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
             <input type="number" name="daily_task_limit" min="0" step="1"
                    value="<?= (int)$dailyTaskLimit ?>" style="width:120px">
             <div class="adm-info-message" style="margin-top:6px">
-                Максимум наград за практики (tasks) за один день.
-                <b>0 — без ограничений</b>. Дефолт — <b>2</b>. Блокирует накрутку через
-                смену направления.
+                Максимум наград за практики за один день.
+                <b>0 — без ограничений</b>. Дефолт — <b>2</b>.
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td colspan="2">
+            <div class="adm-info-message" style="margin-top:6px">
+                При изменении любого из лимитов автоматически ставится флаг
+                <code>limits_rules_dirty=1</code>. Scheduler пересоберёт дампы в течение
+                5 минут (вне очереди) — <code>config/limits_rules.json</code> на CDN обновится.
             </div>
         </td>
     </tr>
@@ -740,6 +786,42 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
     </tr>
 
     <?php $tabControl->BeginNextTab(); ?>
+
+    <tr class="heading">
+        <td colspan="2">Логирование в /x5.pwa.log</td>
+    </tr>
+    <tr>
+        <td width="40%"><label>Debug-логирование:</label></td>
+        <td width="60%">
+            <input type="hidden"   name="debug_log_enabled" value="N">
+            <input type="checkbox" name="debug_log_enabled" value="Y"
+                   <?= $debugLogEnabled ? 'checked' : '' ?>>
+            <span style="margin-left:8px;color:#666">
+                <?= $debugLogEnabled ? 'сейчас: включено' : 'сейчас: выключено' ?>
+            </span>
+            <div class="adm-info-message" style="margin-top:6px">
+                Пишет операционные события в <code>/x5.pwa.log</code>
+                (награды, действия, пропуски scheduler, ошибки).
+                Файл автоматически не чистится — включайте для отладки, выключайте после.
+                Критические ошибки (сбои БД, недоступность S3) пишутся всегда.
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td><label>Текущий файл лога:</label></td>
+        <td>
+            <code>/x5.pwa.log</code> — <b><?= htmlspecialcharsbx($logSizeText) ?></b>
+            <div style="margin-top:8px">
+                <input type="submit" name="clear_log" value="Очистить лог"
+                       class="adm-btn"
+                       onclick="return confirm('Удалить /x5.pwa.log? Действие необратимо.')">
+            </div>
+        </td>
+    </tr>
+
+    <tr class="heading">
+        <td colspan="2">Сервисные операции</td>
+    </tr>
     <tr>
         <td colspan="2">
             <p>Проверить соединение с S3.</p>
@@ -758,10 +840,7 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
         <td colspan="2">
             <p>
                 <b>Пересоздать admin-обёртки.</b> Обновит файлы в
-                <code>/bitrix/admin/</code> — они подключают реальные страницы
-                из <code>/local/modules/x5.pwa/admin/</code>.
-                Используйте после добавления новых admin-файлов в модуль,
-                чтобы не переустанавливать его.
+                <code>/bitrix/admin/</code>.
                 Чужие файлы (не наши обёртки) не тронет.
             </p>
             <input type="submit" name="resetup_admin" value="Пересоздать admin-обёртки"

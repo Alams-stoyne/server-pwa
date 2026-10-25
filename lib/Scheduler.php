@@ -25,13 +25,11 @@ class Scheduler
 
         try {
             self::runHabitReminders();
-            self::maybeRecalcStats();          // ← пересчёт кешей RANK/EFFICIENCY/HABITS_DAYS
+            self::maybeRecalcStats();
             self::maybeRegenerateDumps();
-            self::maybeRegenerateStats();      // ← обновление stats/global.json на CDN
+            self::maybeRegenerateStats();
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
-                $e->getMessage(), 'Scheduler::lazyRun', '/x5.pwa.log'
-            );
+            Settings::logError($e->getMessage(), 'Scheduler::lazyRun');
         }
 
         flock($fp, LOCK_UN);
@@ -41,9 +39,9 @@ class Scheduler
     /**
      * Пересчёт кешей статистики в UidBindings:
      *   • UF_RANK — композитный рейтинг;
-     *   • UF_EFFICIENCY_ALL — эффективность за период;
-     *   • UF_EFFICIENCY_DAY — эффективность за сегодня;
-     *   • UF_HABITS_DAYS — число полных дней привычки.
+     *   • UF_EFFICIENCY_ALL/DAY — эффективность;
+     *   • UF_HABITS_DAYS — число полных дней привычки;
+     *   • UF_EARNED_ALL / UF_MAX_ALL / UF_MISSING_ALL / UF_EARNED_DAY / UF_MAX_DAY.
      *
      * Запускается не чаще stats_recalc_interval_sec (дефолт 3600 сек).
      */
@@ -53,17 +51,15 @@ class Scheduler
 
         try {
             $r = StatsBuilder::recalcAllStats();
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::log(
                 'recalcAllStats: processed=' . ($r['processed'] ?? 0)
                 . ' elapsed=' . ($r['elapsed'] ?? '?') . 's',
-                'Scheduler recalc',
-                '/x5.pwa.log'
+                'Scheduler recalc'
             );
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
+            Settings::logError(
                 'recalcAllStats FAILED: ' . $e->getMessage(),
-                'Scheduler recalc',
-                '/x5.pwa.log'
+                'Scheduler recalc'
             );
         }
     }
@@ -75,43 +71,50 @@ class Scheduler
         try {
             $r = Dumper::regenerateStats();
             if (!empty($r['ok'])) {
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::log(
                     'updated, key=' . ($r['key'] ?? '?') . ' elapsed=' . ($r['elapsed'] ?? '?'),
-                    'Scheduler stats',
-                    '/x5.pwa.log'
+                    'Scheduler stats'
                 );
             } else {
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                Settings::logError(
                     'FAILED: ' . ($r['error'] ?? 'unknown'),
-                    'Scheduler stats',
-                    '/x5.pwa.log'
+                    'Scheduler stats'
                 );
             }
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
-                $e->getMessage(), 'Scheduler stats exception', '/x5.pwa.log'
-            );
+            Settings::logError($e->getMessage(), 'Scheduler stats exception');
         }
     }
 
+    /**
+     * Пересборка полных дампов.
+     *
+     * Обычно — раз в 24 часа. Но если админ изменил настройки дневных
+     * лимитов (daily_*_limit), settings-слой ставит флаг limits_rules_dirty=1 —
+     * тогда пересобираем вне очереди, чтобы config/limits_rules.json
+     * на CDN обновился как можно скорее (в течение тика scheduler, ~60 сек).
+     */
     private static function maybeRegenerateDumps(): void
     {
+        $dirty    = Settings::limitsRulesDirty();
         $lastDump = Settings::lastDumpAt();
-        if ($lastDump > 0 && (time() * 1000 - $lastDump) < self::DUMP_INTERVAL_MS) {
+
+        if (!$dirty && $lastDump > 0
+            && (time() * 1000 - $lastDump) < self::DUMP_INTERVAL_MS) {
             return;
         }
+
         try {
             Dumper::regenerateAll();
+            // флаг сбрасывается внутри Dumper::regenerateAll
         } catch (\Throwable $e) {
-            \Bitrix\Main\Diag\Debug::writeToFile(
-                $e->getMessage(), 'Scheduler auto-dump', '/x5.pwa.log'
-            );
+            Settings::logError($e->getMessage(), 'Scheduler auto-dump');
         }
     }
 
     private static function logSkip(string $uid, string $habitId, string $reason, array $ctx = []): void
     {
-        \Bitrix\Main\Diag\Debug::writeToFile(
+        Settings::log(
             sprintf(
                 'skip uid=%s habit=%s reason=%s ctx=%s',
                 substr($uid, 0, 12) . '…',
@@ -119,8 +122,7 @@ class Scheduler
                 $reason,
                 json_encode($ctx, JSON_UNESCAPED_UNICODE)
             ),
-            'Scheduler habit',
-            '/x5.pwa.log'
+            'Scheduler habit'
         );
     }
 
@@ -172,11 +174,10 @@ class Scheduler
                 if (isset($habitsById[$selectedHabit])) {
                     $habitIdsToNotify[] = $selectedHabit;
                 } else {
-                    \Bitrix\Main\Diag\Debug::writeToFile(
+                    Settings::log(
                         'selected habit not found in catalog uid='
                         . substr($uid, 0, 12) . '… habit=' . $selectedHabit,
-                        'Scheduler habit',
-                        '/x5.pwa.log'
+                        'Scheduler habit'
                     );
                 }
             } else {
@@ -274,13 +275,12 @@ class Scheduler
                         'url'    => '/',
                         'status' => (string)$r['statusCode'],
                     ]);
-                    \Bitrix\Main\Diag\Debug::writeToFile(
+                    Settings::log(
                         sprintf('sent uid=%s habit=%s doneToday=%d/%d',
                             substr($uid, 0, 12) . '…', $habitId,
                             $completionsToday, (int)$cfg['timesPerDay']
                         ),
-                        'Scheduler habit',
-                        '/x5.pwa.log'
+                        'Scheduler habit'
                     );
                 } elseif ($r['gone']) {
                     Storage::deleteSubscription($uid);

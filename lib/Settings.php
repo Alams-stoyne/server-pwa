@@ -6,8 +6,6 @@ use Bitrix\Main\Config\Option;
 class Settings
 {
     private const MODULE = 'x5.pwa';
-
-    /** Значение CDN по умолчанию, если настройка пуста. */
     private const CDN_DEFAULT = 'https://cdn.x5hd.ru';
 
     public static function get(string $key, string $default = ''): string
@@ -45,10 +43,9 @@ class Settings
                 $host
             );
             if ($isS3) {
-                \Bitrix\Main\Diag\Debug::writeToFile(
+                self::logError(
                     'cdn_base looks like S3 endpoint: "' . $raw . '" — falling back to ' . self::CDN_DEFAULT,
-                    'Settings::cdnBase',
-                    '/x5.pwa.log'
+                    'Settings::cdnBase'
                 );
                 return self::CDN_DEFAULT;
             }
@@ -172,7 +169,6 @@ class Settings
     }
 
     // ── Период статистики ──
-
     public static function statsPeriodStart(): string
     {
         $raw = trim(self::get('stats_period_start', ''));
@@ -199,8 +195,7 @@ class Settings
         return true;
     }
 
-    // ── Интервал пересчёта кешей статистики ──
-
+    // ── Интервал пересчёта кешей ──
     public static function statsRecalcIntervalSec(): int
     {
         $v = self::getInt('stats_recalc_interval_sec', 3600);
@@ -225,8 +220,7 @@ class Settings
         return (time() - $last) >= self::statsRecalcIntervalSec();
     }
 
-    // ── Награды (дефолты) ──
-
+    // ── Награды ──
     public static function rewardStepsSentPoints(): int
     {
         return max(0, self::getInt('reward_steps_sent_points', 0));
@@ -242,33 +236,57 @@ class Settings
         return max(0, self::getInt('reward_reflection_points', 2));
     }
 
-    // ── Дневные лимиты наград (антифрод) ──
-    //
-    // 0 = без ограничений.
-    // Ограничение — по COUNT(*) в x5_pwa_reward_log за UF_LOCAL_DATE + UF_ACTION_TYPE.
-    // Применяется в RewardsBuilder::award() ДО добавления записи.
-
-    /** Максимум наград за общие лекции (general_lectures) в день. */
+    // ── Дневные лимиты (антифрод) ──
     public static function dailyGeneralLectureLimit(): int
     {
         return max(0, self::getInt('daily_general_lecture_limit', 0));
     }
 
-    /** Максимум наград за лекции по направлению (theme_lectures) в день. */
     public static function dailyThemeLectureLimit(): int
     {
         return max(0, self::getInt('daily_theme_lecture_limit', 1));
     }
 
-    /** Максимум наград за зарядку (charging) в день. */
     public static function dailyChargingLimit(): int
     {
         return max(0, self::getInt('daily_charging_limit', 0));
     }
 
-    /** Максимум наград за практики/задания (tasks) в день. */
     public static function dailyTaskLimit(): int
     {
         return max(0, self::getInt('daily_task_limit', 2));
+    }
+
+    // ── Логирование ──
+    public static function debugLogEnabled(): bool
+    {
+        return self::getBool('debug_log_enabled', true);
+    }
+
+    public static function log(string $message, string $label = 'x5.pwa', string $file = '/x5.pwa.log'): void
+    {
+        if (!self::debugLogEnabled()) return;
+        \Bitrix\Main\Diag\Debug::writeToFile($message, $label, $file);
+    }
+
+    public static function logError(string $message, string $label = 'x5.pwa', string $file = '/x5.pwa.log'): void
+    {
+        \Bitrix\Main\Diag\Debug::writeToFile($message, $label, $file);
+    }
+
+    // ── Флаг пересборки limits_rules.json ──
+    public static function limitsRulesDirty(): bool
+    {
+        return self::getBool('limits_rules_dirty', false);
+    }
+
+    public static function markLimitsRulesDirty(): void
+    {
+        self::set('limits_rules_dirty', '1');
+    }
+
+    public static function clearLimitsRulesDirty(): void
+    {
+        self::set('limits_rules_dirty', '0');
     }
 }
