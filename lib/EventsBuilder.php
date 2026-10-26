@@ -9,7 +9,7 @@ class EventsBuilder
     public const CLICK_RATE_LIMIT_HOUR  = 60;
     public const CONFIRM_RATE_LIMIT_DAY = 10;
 
-    /** Буфер дат для CDN: сколько дней назад и вперёд генерировать. */
+    /** Буфер дат для CDN (используется только если период активности не задан). */
     public const CDN_DAYS_BACK    = 3;
     public const CDN_DAYS_FORWARD = 7;
 
@@ -89,18 +89,53 @@ class EventsBuilder
         return $events;
     }
 
-    public static function getCdnDates(): array
+    /**
+     * Даты, для которых нужно сгенерировать events/{date}.json.
+     *
+     * Поведение:
+     *   • Если период не задан (оба null или '') — обратная совместимость:
+     *     даты из ИБ + today ± CDN_DAYS_BACK..CDN_DAYS_FORWARD.
+     *   • Если период задан — только даты из ИБ, попадающие в [from, to],
+     *     плюс today (если сегодня в периоде).
+     *
+     * Это позволяет клиенту не получать 404 для дат, которых нет в ИБ,
+     * но которые лежат в пределах активного периода — если админ добавит
+     * событие на 28.10, то 28.10.json уже будет (пустой или с данными
+     * после пересборки).
+     */
+    public static function getCdnDates(?string $from = null, ?string $to = null): array
     {
+        $hasPeriod = ($from !== null && $from !== '') || ($to !== null && $to !== '');
+
         $dates = [];
 
+        // 1. Даты из ИБ — фильтруем по периоду (если задан)
         foreach (self::getAll() as $e) {
-            $dates[$e['DATE']] = true;
+            $d = (string)($e['DATE'] ?? '');
+            if ($d === '') continue;
+            if ($hasPeriod) {
+                if ($from !== null && $from !== '' && $d < $from) continue;
+                if ($to   !== null && $to   !== '' && $d > $to)   continue;
+            }
+            $dates[$d] = true;
         }
 
-        $today = date('Y-m-d');
-        for ($i = -self::CDN_DAYS_BACK; $i <= self::CDN_DAYS_FORWARD; $i++) {
-            $d = date('Y-m-d', strtotime("{$today} {$i} days"));
-            $dates[$d] = true;
+        if (!$hasPeriod) {
+            // 2. Обратная совместимость: today ± N
+            $today = date('Y-m-d');
+            for ($i = -self::CDN_DAYS_BACK; $i <= self::CDN_DAYS_FORWARD; $i++) {
+                $d = date('Y-m-d', strtotime("{$today} {$i} days"));
+                $dates[$d] = true;
+            }
+        } else {
+            // 3. Период задан: today добавляем только если он в периоде
+            $today = date('Y-m-d');
+            $todayInPeriod = true;
+            if ($from !== null && $from !== '' && $today < $from) $todayInPeriod = false;
+            if ($to   !== null && $to   !== '' && $today > $to)   $todayInPeriod = false;
+            if ($todayInPeriod) {
+                $dates[$today] = true;
+            }
         }
 
         $out = array_keys($dates);
@@ -301,7 +336,6 @@ class EventsBuilder
             return self::confirmResult('DB_ERROR');
         }
 
-        // ─── Награда за мероприятие ───
         try {
             $localDate = RewardsBuilder::userLocalDate($uid);
             RewardsBuilder::awardEvent(

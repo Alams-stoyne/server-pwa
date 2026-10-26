@@ -6,7 +6,7 @@ use Bitrix\Main\Entity\ExpressionField;
 class RewardsBuilder
 {
     public const TYPE_HABIT           = 'habit';
-    /** @deprecated Используется для старых записей (до разделения lecture на general/theme). */
+    /** @deprecated */
     public const TYPE_LECTURE         = 'lecture';
     public const TYPE_LECTURE_GENERAL = 'lecture_general';
     public const TYPE_LECTURE_THEME   = 'lecture_theme';
@@ -57,18 +57,17 @@ class RewardsBuilder
         $points     = max(0, $points);
 
         if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
-            return ['ok' => false, 'added' => false, 'already' => false, 'points' => 0, 'balance' => 0];
+            return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'INVALID_UID', 'points' => 0, 'balance' => 0];
         }
         if (!in_array($actionType, self::ALL_TYPES, true)) {
-            return ['ok' => false, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'INVALID_TYPE', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
         if ($actionId === '' || $points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
 
         $localDate = $localDate ?: self::userLocalDate($uid);
 
-        // ─── Дневной лимит ───
         $limitCheck = self::checkDailyLimit($uid, $actionType, $localDate);
         if (!$limitCheck['ok']) {
             Settings::log(
@@ -112,6 +111,7 @@ class RewardsBuilder
                     'ok'      => true,
                     'added'   => false,
                     'already' => true,
+                    'reason'  => 'ALREADY_AWARDED',
                     'points'  => $points,
                     'balance' => self::getBalance($uid),
                 ];
@@ -125,6 +125,7 @@ class RewardsBuilder
                 'ok'      => false,
                 'added'   => false,
                 'already' => false,
+                'reason'  => 'DB_ERROR',
                 'points'  => 0,
                 'balance' => self::getBalance($uid),
             ];
@@ -144,22 +145,12 @@ class RewardsBuilder
             'ok'      => true,
             'added'   => true,
             'already' => false,
+            'reason'  => 'OK',
             'points'  => $points,
             'balance' => self::getBalance($uid),
         ];
     }
 
-    /**
-     * Проверка дневного лимита для данного actionType.
-     * Лимиты задаются в настройках модуля. 0 = без ограничений.
-     *
-     * Важно: для лекций считаем COUNT с учётом legacy-типа 'lecture',
-     * чтобы старые записи (до разделения на general/theme) тоже учитывались:
-     *   lecture_theme / lecture  → IN ('lecture', 'lecture_theme')
-     *   lecture_general          → IN ('lecture', 'lecture_general')
-     *
-     * @return array{ok:bool, reason?:string, limit?:int, count?:int}
-     */
     private static function checkDailyLimit(string $uid, string $actionType, string $localDate): array
     {
         $limitsMap = [
@@ -172,8 +163,6 @@ class RewardsBuilder
                 'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME],
             ],
             self::TYPE_LECTURE => [
-                // fallback-тип — не знаем, какая это была лекция, считаем консервативно
-                // по счётчику «лекции по направлению»
                 'limit' => Settings::dailyThemeLectureLimit(),
                 'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME],
             ],
@@ -214,7 +203,6 @@ class RewardsBuilder
             ])->fetch();
             $count = (int)($row['CNT'] ?? 0);
         } catch (\Throwable $e) {
-            // При сбое БД не блокируем — лучше начислить, чем оставить юзера без награды
             Settings::logError(
                 'checkDailyLimit DB error uid=' . substr($uid, 0, 12) . '… type=' . $actionType
                 . ' date=' . $localDate . ': ' . $e->getMessage(),
@@ -235,15 +223,15 @@ class RewardsBuilder
         $points      = (int)($habitCfg['rewardPoints'] ?? 0);
 
         if ($timesPerDay < 1 || $doneToday < $timesPerDay) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NOT_DONE_YET', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
 
         $habitId = (string)($habitCfg['id'] ?? '');
         if ($habitId === '') {
-            return ['ok' => false, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'NO_HABIT_ID', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
 
         return self::award(
@@ -267,10 +255,19 @@ class RewardsBuilder
         string $source = ''
     ): array {
         if ($elementDate !== $localDate) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return [
+                'ok' => true, 'added' => false, 'already' => false,
+                'reason' => 'ELEMENT_DATE_MISMATCH',
+                'elementDate' => $elementDate, 'localDate' => $localDate,
+                'points' => 0, 'balance' => self::getBalance($uid),
+            ];
         }
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return [
+                'ok' => true, 'added' => false, 'already' => false,
+                'reason' => 'NO_POINTS',
+                'points' => 0, 'balance' => self::getBalance($uid),
+            ];
         }
 
         if ($source === 'general') {
@@ -302,10 +299,19 @@ class RewardsBuilder
         string $localDate
     ): array {
         if ($elementDate !== $localDate) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return [
+                'ok' => true, 'added' => false, 'already' => false,
+                'reason' => 'ELEMENT_DATE_MISMATCH',
+                'elementDate' => $elementDate, 'localDate' => $localDate,
+                'points' => 0, 'balance' => self::getBalance($uid),
+            ];
         }
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return [
+                'ok' => true, 'added' => false, 'already' => false,
+                'reason' => 'NO_POINTS',
+                'points' => 0, 'balance' => self::getBalance($uid),
+            ];
         }
 
         return self::award(
@@ -334,49 +340,28 @@ class RewardsBuilder
         if ($points <= 0) $points = Settings::rewardReflectionPoints();
 
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
 
-        return self::award(
-            $uid,
-            self::TYPE_REFLECTION,
-            $localDate,
-            $points,
-            $title,
-            $localDate
-        );
+        return self::award($uid, self::TYPE_REFLECTION, $localDate, $points, $title, $localDate);
     }
 
     public static function awardStepsSent(string $uid, string $localDate): array
     {
         $points = Settings::rewardStepsSentPoints();
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
-        return self::award(
-            $uid,
-            self::TYPE_STEPS_SENT,
-            $localDate,
-            $points,
-            'Шаги за ' . $localDate,
-            $localDate
-        );
+        return self::award($uid, self::TYPE_STEPS_SENT, $localDate, $points, 'Шаги за ' . $localDate, $localDate);
     }
 
     public static function awardStepsApproved(string $uid, string $stepsLocalDate): array
     {
         $points = Settings::rewardStepsApprovedPoints();
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
-        return self::award(
-            $uid,
-            self::TYPE_STEPS_APPROVED,
-            $stepsLocalDate,
-            $points,
-            'Шаги подтверждены за ' . $stepsLocalDate,
-            $stepsLocalDate
-        );
+        return self::award($uid, self::TYPE_STEPS_APPROVED, $stepsLocalDate, $points, 'Шаги подтверждены за ' . $stepsLocalDate, $stepsLocalDate);
     }
 
     public static function awardEvent(
@@ -387,17 +372,10 @@ class RewardsBuilder
         string $localDate
     ): array {
         if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'points' => 0, 'balance' => self::getBalance($uid)];
+            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
 
-        return self::award(
-            $uid,
-            self::TYPE_EVENT,
-            $eventId,
-            $points,
-            $title,
-            $localDate
-        );
+        return self::award($uid, self::TYPE_EVENT, $eventId, $points, $title, $localDate);
     }
 
     /**
@@ -424,7 +402,6 @@ class RewardsBuilder
         if (!$el = $rs->Fetch()) return null;
 
         $ibId = (int)$el['IBLOCK_ID'];
-
         $type   = $ibId === $ibCharging ? 'charging' : 'lecture';
         $source = 'theme';
         if ($ibId === $ibGeneral)  $source = 'general';
@@ -492,6 +469,64 @@ class RewardsBuilder
             'date'   => $dateStr,
             'points' => $points,
         ];
+    }
+
+    /**
+     * Резолвит любой ID (numeric / CODE / с префиксом даты) в числовой ID элемента ИБ.
+     *
+     * Поддерживаемые форматы:
+     *   "5"                          — numeric ID
+     *   "5-2026-10-25"               — numeric ID + date
+     *   "2026-10-25:5-2026-10-25"    — префикс + numeric ID + date
+     *   "stress-relief-1"            — CODE
+     *   "stress-relief-1-2026-10-25" — CODE + date
+     *   "2026-10-25:stress-relief-1-2026-10-25"
+     *
+     * Ищет CODE во всех 4 ИБ контента (general_lectures, charging,
+     * theme_lectures, tasks). Возвращает null, если не найден.
+     */
+    public static function resolveElementIdFromAny(string $rawId): ?int
+    {
+        $rawId = trim($rawId);
+        if ($rawId === '') return null;
+
+        // снять префикс до последнего ':'
+        if (($pos = strrpos($rawId, ':')) !== false) {
+            $rawId = substr($rawId, $pos + 1);
+        }
+
+        // снять хвостовой -YYYY-MM-DD
+        if (preg_match('/^(.+?)-\d{4}-\d{2}-\d{2}$/', $rawId, $m)) {
+            $rawId = $m[1];
+        }
+
+        if ($rawId === '') return null;
+
+        if (ctype_digit($rawId)) {
+            return (int)$rawId;
+        }
+
+        foreach (['general_lectures', 'charging', 'theme_lectures', 'tasks'] as $key) {
+            $ibId = (int)Settings::iblockId($key);
+            if ($ibId <= 0) continue;
+
+            $rs = \CIBlockElement::GetList(
+                ['ID' => 'ASC'],
+                [
+                    'IBLOCK_ID'         => $ibId,
+                    '=CODE'             => $rawId,
+                    'CHECK_PERMISSIONS' => 'N',
+                ],
+                false,
+                ['nTopCount' => 1],
+                ['ID']
+            );
+            if ($el = $rs->Fetch()) {
+                return (int)$el['ID'];
+            }
+        }
+
+        return null;
     }
 
     public static function getBalance(string $uid): int

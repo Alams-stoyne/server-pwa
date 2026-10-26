@@ -182,8 +182,39 @@ class Dumper
         ];
         self::log('IB IDs: ' . json_encode($ibIds));
 
-        // Уникальность ID_LECTURE / ID_TASK = {CODE}-{DATE} гарантируется настройкой ИБ
-        // «Проверять уникальность символьного кода» (включена администратором).
+        // ─── Период активности для дампов ───
+        // Берём сырые настройки (без обрезки до today), чтобы:
+        //   • файлы для будущих дат внутри периода тоже генерировались (пустые);
+        //   • даты вне периода НЕ дампились (клиент не должен видеть контент
+        //     вне активного периода).
+        // Fallback: если одна из границ не задана — подставим эффективную.
+        $rawFrom = Settings::statsPeriodStart();
+        $rawTo   = Settings::statsPeriodEnd();
+        $hasPeriod = ($rawFrom !== '' || $rawTo !== '');
+
+        if ($hasPeriod) {
+            [$effFrom, $effTo] = StatsBuilder::getEffectivePeriod();
+            if ($rawFrom === '') $rawFrom = $effFrom;
+            if ($rawTo   === '') $rawTo   = $effTo;
+        }
+
+        self::log(sprintf(
+            'PERIOD for dumps: from=%s to=%s (%s)',
+            $rawFrom !== '' ? $rawFrom : '—',
+            $rawTo   !== '' ? $rawTo   : '—',
+            $hasPeriod ? 'active' : 'none (dump all)'
+        ));
+
+        $isInPeriod = function (string $date) use ($rawFrom, $rawTo, $hasPeriod): bool {
+            if (!$hasPeriod) return true;
+            if ($rawFrom !== '' && $date < $rawFrom) return false;
+            if ($rawTo   !== '' && $date > $rawTo)   return false;
+            return true;
+        };
+
+        $today         = date('Y-m-d');
+        $todayInPeriod = $isInPeriod($today);
+
         $raw = ContentBuilder::rawAll();
 
         foreach ($raw as $bucket => $items) {
@@ -194,32 +225,38 @@ class Dumper
         if (!$themes && !ThemesResolver::isConfigured()) {
             $themes = ['energy', 'antistress', 'body', 'balance'];
         }
-        $today = date('Y-m-d');
-        self::log("TODAY = $today, themes=" . implode(',', $themes));
+        self::log("TODAY = $today, themes=" . implode(',', $themes)
+            . ($hasPeriod ? ", today_in_period=" . ($todayInPeriod ? 'Y' : 'N') : ''));
 
+        // Группировка лекций — с фильтром по периоду
         $groupedLectures = [];
         foreach ($raw['general_lectures'] as $it) {
             $d = $it['DATE_ACTIVE'] ?? null;
             if (!$d) continue;
+            if (!$isInPeriod((string)$d)) continue;   // ← фильтр по периоду
             $groupedLectures['general'][$d][] = $it;
         }
         foreach ($raw['charging'] as $it) {
             $d = $it['DATE_ACTIVE'] ?? null;
             if (!$d) continue;
+            if (!$isInPeriod((string)$d)) continue;   // ← фильтр по периоду
             $groupedLectures['charging'][$d][] = $it;
         }
         foreach ($raw['theme_lectures'] as $it) {
             $d = $it['DATE_ACTIVE'] ?? null;
             if (!$d) continue;
             if (empty($it['THEME'])) continue;
+            if (!$isInPeriod((string)$d)) continue;   // ← фильтр по периоду
             $groupedLectures[$it['THEME']][$d][] = $it;
         }
 
+        // Группировка заданий — с фильтром по периоду
         $groupedTasks = [];
         foreach ($raw['tasks'] as $it) {
             $d = $it['DATE_ACTIVE'] ?? null;
             if (!$d) continue;
             if (empty($it['THEME'])) continue;
+            if (!$isInPeriod((string)$d)) continue;   // ← фильтр по периоду
             $groupedTasks[$it['THEME']][$d][] = $it;
         }
 
@@ -241,9 +278,13 @@ class Dumper
             'config'   => 0, 'steps' => 0, 'events' => 0, 'empty' => 0,
         ];
 
+        // general / charging: даты из ИБ уже отфильтрованы,
+        // today добавляем только если он в периоде.
         foreach (['general', 'charging'] as $bucket) {
             $dates = array_keys($groupedLectures[$bucket] ?? []);
-            if (!in_array($today, $dates, true)) $dates[] = $today;
+            if ($todayInPeriod && !in_array($today, $dates, true)) {
+                $dates[] = $today;
+            }
             foreach ($dates as $d) {
                 $items = $groupedLectures[$bucket][$d] ?? [];
                 $map["lectures/$bucket/$d.json"] = self::prepareLectures($items, $d);
@@ -252,9 +293,14 @@ class Dumper
             }
         }
 
+        // темы лекций: dates уже отфильтрованы по периоду
         $allThemesToDump = array_values(array_unique(array_merge($themes, $extraThemesLectures)));
         foreach ($allThemesToDump as $theme) {
             $dates = array_keys($groupedLectures[$theme] ?? []);
+            if ($todayInPeriod && in_array($theme, $themes, true)
+                && !in_array($today, $dates, true)) {
+                $dates[] = $today;
+            }
             foreach ($dates as $d) {
                 $items = $groupedLectures[$theme][$d] ?? [];
                 $map["lectures/$theme/$d.json"] = self::prepareLectures($items, $d);
@@ -262,11 +308,13 @@ class Dumper
             }
         }
 
+        // темы заданий: dates уже отфильтрованы
         $allThemesTasks = array_values(array_unique(array_merge($themes, $extraThemesTasks)));
         foreach ($allThemesTasks as $theme) {
             $dates = array_keys($groupedTasks[$theme] ?? []);
-            if (in_array($theme, $themes, true)) {
-                if (!in_array($today, $dates, true)) $dates[] = $today;
+            if ($todayInPeriod && in_array($theme, $themes, true)
+                && !in_array($today, $dates, true)) {
+                $dates[] = $today;
             }
             foreach ($dates as $d) {
                 $items = $groupedTasks[$theme][$d] ?? [];
@@ -288,12 +336,8 @@ class Dumper
             ];
             $map['config/workplaces.json'] = WorkplacesBuilder::getForCdn();
 
-            // ← ИЗМЕНЕНО: config/period.json отдаёт эффективный период
-            //   (START..END) и запланированный (PLANNED_START..PLANNED_END).
-            //   START/END обрезаются до «сегодня», потому что статистика за
-            //   будущие дни не считается. PLANNED_* — сырые настройки модуля,
-            //   могут быть в будущем (полезно для отображения «до какого числа
-            //   идёт челлендж»).
+            // config/period.json — эффективный период (START..END) +
+            // запланированный (PLANNED_START..PLANNED_END) + TODAY.
             [$periodFrom, $periodTo] = StatsBuilder::getEffectivePeriod();
             $plannedStart = Settings::statsPeriodStart();
             $plannedEnd   = Settings::statsPeriodEnd();
@@ -321,8 +365,12 @@ class Dumper
             self::logError('config/* FAILED: ' . $e->getMessage(), 'Dumper config');
         }
 
+        // События — параметризуем периодом
         try {
-            $eventDates = EventsBuilder::getCdnDates();
+            $eventDates = EventsBuilder::getCdnDates(
+                $hasPeriod ? $rawFrom : null,
+                $hasPeriod ? $rawTo   : null
+            );
             foreach ($eventDates as $eventDate) {
                 $key = "events/{$eventDate}.json";
                 $map[$key] = EventsBuilder::getForCdn($eventDate);
@@ -350,6 +398,12 @@ class Dumper
         $manifest = [
             'updated_at'   => (new \Bitrix\Main\Type\DateTime())->toString(),
             'generated_at' => $today,
+            'period'       => [
+                'FROM'          => $hasPeriod ? $rawFrom : '',
+                'TO'            => $hasPeriod ? $rawTo   : '',
+                'PLANNED_FROM'  => Settings::statsPeriodStart(),
+                'PLANNED_TO'    => Settings::statsPeriodEnd(),
+            ],
             'categories'   => $byCategory,
             'files'        => [],
         ];

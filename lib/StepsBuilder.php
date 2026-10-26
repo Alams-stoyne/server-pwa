@@ -5,8 +5,8 @@ use Bitrix\Main\Application;
 
 class StepsBuilder
 {
-    public const GOAL = 100000;
-    public const MAX_STEPS = 30000;
+    public const GOAL = 350000;
+    public const MAX_STEPS = 50000;
     public const MAX_IMAGES = 10;
     public const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
