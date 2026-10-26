@@ -38,8 +38,14 @@ class Reads
         $limitInfo    = [];
 
         try {
-            if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $id, $m)) {
-                $elementId = (int)$m[1];
+            // ID может быть: numeric, CODE, с префиксом даты / типа / с суффиксом даты.
+            // Ограничиваем поиск только ИБ лекций.
+            $elementId = RewardsBuilder::resolveElementIdFromAny(
+                $id,
+                ['general_lectures', 'charging', 'theme_lectures']
+            );
+
+            if ($elementId !== null) {
                 $localDate = RewardsBuilder::userLocalDate($uid);
                 $info      = RewardsBuilder::resolveLectureInfo($elementId);
 

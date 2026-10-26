@@ -472,32 +472,35 @@ class RewardsBuilder
     }
 
     /**
-     * Резолвит любой ID (numeric / CODE / с префиксом даты) в числовой ID элемента ИБ.
+     * Резолвит любой ID (numeric / CODE / с префиксом и датой) в числовой ID элемента ИБ.
      *
      * Поддерживаемые форматы:
-     *   "5"                          — numeric ID
-     *   "5-2026-10-25"               — numeric ID + date
-     *   "2026-10-25:5-2026-10-25"    — префикс + numeric ID + date
-     *   "stress-relief-1"            — CODE
-     *   "stress-relief-1-2026-10-25" — CODE + date
-     *   "2026-10-25:stress-relief-1-2026-10-25"
+     *   "5"                                      — numeric ID
+     *   "5-2026-10-25"                           — numeric ID + date
+     *   "2026-10-25:5-2026-10-25"                — prefix-date + numeric ID + date
+     *   "stress-relief-1"                        — CODE
+     *   "stress-relief-1-2026-10-25"             — CODE + date
+     *   "2026-10-25:stress-relief-1-2026-10-25"  — prefix-date + CODE + date
+     *   "lecture-charging:2026-10-25:code-2026-10-25" — prefix-type + prefix-date + CODE + date
      *
-     * Ищет CODE во всех 4 ИБ контента (general_lectures, charging,
-     * theme_lectures, tasks). Возвращает null, если не найден.
+     * Порядок операций: сначала дата (структурный суффикс), потом префикс до последнего ':'.
+     * Если задан $candidateKeys — ищем CODE только в этих инфоблоках.
+     *
+     * @param string[]|null $candidateKeys ключи из Settings::iblockId()
      */
-    public static function resolveElementIdFromAny(string $rawId): ?int
+    public static function resolveElementIdFromAny(string $rawId, ?array $candidateKeys = null): ?int
     {
         $rawId = trim($rawId);
         if ($rawId === '') return null;
 
-        // снять префикс до последнего ':'
-        if (($pos = strrpos($rawId, ':')) !== false) {
-            $rawId = substr($rawId, $pos + 1);
-        }
-
-        // снять хвостовой -YYYY-MM-DD
+        // 1) снять хвостовой -YYYY-MM-DD
         if (preg_match('/^(.+?)-\d{4}-\d{2}-\d{2}$/', $rawId, $m)) {
             $rawId = $m[1];
+        }
+
+        // 2) снять префикс до последнего ':'
+        if (($pos = strrpos($rawId, ':')) !== false) {
+            $rawId = substr($rawId, $pos + 1);
         }
 
         if ($rawId === '') return null;
@@ -506,7 +509,9 @@ class RewardsBuilder
             return (int)$rawId;
         }
 
-        foreach (['general_lectures', 'charging', 'theme_lectures', 'tasks'] as $key) {
+        $keys = $candidateKeys ?: ['general_lectures', 'charging', 'theme_lectures', 'tasks'];
+
+        foreach ($keys as $key) {
             $ibId = (int)Settings::iblockId($key);
             if ($ibId <= 0) continue;
 

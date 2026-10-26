@@ -37,8 +37,11 @@ class Tasks
         $limitInfo    = [];
 
         try {
-            if (preg_match('/(?:^|:)(\d+)-(\d{4}-\d{2}-\d{2})$/', $k, $m)) {
-                $elementId = (int)$m[1];
+            // ID может быть: numeric, CODE, с префиксом даты / с суффиксом даты.
+            // Ограничиваем поиск только ИБ задач.
+            $elementId = RewardsBuilder::resolveElementIdFromAny($k, ['tasks']);
+
+            if ($elementId !== null) {
                 $localDate = RewardsBuilder::userLocalDate($uid);
                 $info      = RewardsBuilder::resolveTaskInfo($elementId);
 

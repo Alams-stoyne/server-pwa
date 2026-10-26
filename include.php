@@ -37,6 +37,7 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\RateLimit'         => 'lib/RateLimit.php',
     'X5\\Pwa\\Cors'              => 'lib/Cors.php',
     'X5\\Pwa\\StatsBuilder'      => 'lib/StatsBuilder.php',
+    'X5\\Pwa\\Outbox'            => 'lib/Outbox.php',
 
     'X5\\Pwa\\Property\\QuizAnswer' => 'lib/Property/QuizAnswer.php',
 
