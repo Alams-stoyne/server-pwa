@@ -73,6 +73,7 @@ class Auth
         $storedState   = Storage::getState($uid);
         $consent       = Storage::getConsent($uid);
         $selectedHabit = Storage::getSelectedHabit($uid);
+        $isTest        = Storage::isTestAccount($uid);
 
         // Локальная дата пользователя (по сохранённому TZ)
         $localDate = RewardsBuilder::userLocalDate($uid);
@@ -96,12 +97,12 @@ class Auth
         return [
             'RESULT'  => 'OK',
             'ID_USER' => $uid,
+            'IS_TEST' => $isTest, // ← Флаг для клиента
             'STATE'   => $state,
             'READS'   => Storage::getReads($uid),
             'TASKS'   => Storage::getTasks($uid),
             'HABITS'  => empty($habits) ? (object)[] : $habits,
 
-            // Персональные счётчики использованных наград за локальный день
             'LIMITS_USED' => [
                 'LOCAL_DATE'      => $localDate,
                 'LECTURE_THEME'   => (int)$limitsUsed['LECTURE_THEME'],

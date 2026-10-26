@@ -289,4 +289,26 @@ class Settings
     {
         self::set('limits_rules_dirty', '0');
     }
+
+    // ── Outbox наград ──
+    public static function outboxEnabled(): bool
+    {
+        return self::getBool('outbox_enabled', true);
+    }
+
+    public static function outboxIntervalSec(): int
+    {
+        $v = self::getInt('outbox_interval_sec', 300);
+        if ($v < 60)   $v = 60;
+        if ($v > 3600) $v = 3600;
+        return $v;
+    }
+
+    public static function outboxBatchSize(): int
+    {
+        $v = self::getInt('outbox_batch_size', 500);
+        if ($v < 50)   $v = 50;
+        if ($v > 5000) $v = 5000;
+        return $v;
+    }
 }

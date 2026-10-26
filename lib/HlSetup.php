@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 17;
+        return 18;
     }
 
     public static function config(): array
@@ -33,6 +33,7 @@ class HlSetup
                     'UF_BLOCKED'           => ['string', ['SIZE' => 1]],
                     'UF_BLOCKED_AT'        => ['datetime', []],
                     'UF_BLOCK_REASON'      => ['string', ['SIZE' => 255]],
+                    'UF_IS_TEST'           => ['string', ['SIZE' => 1]], // ← v18: флаг тестового аккаунта
                     'UF_TZ_OFFSET_MIN'     => ['integer', []],
                     'UF_TOTAL_STEPS'       => ['integer', []],
                     'UF_CONSENT_GRANTED'   => ['string', ['SIZE' => 1]],
@@ -45,7 +46,6 @@ class HlSetup
                     'UF_EFFICIENCY_ALL'    => ['double', []],
                     'UF_EFFICIENCY_DAY'    => ['double', []],
                     'UF_HABITS_DAYS'       => ['integer', []],
-                    // ← v17: абсолютные значения для эффективности
                     'UF_EARNED_ALL'        => ['integer', []],
                     'UF_MAX_ALL'           => ['integer', []],
                     'UF_MISSING_ALL'       => ['integer', []],
@@ -404,9 +404,9 @@ class HlSetup
                 'idx_x5pwa_bindings_eff_day'     => 'UF_EFFICIENCY_DAY',
                 'idx_x5pwa_bindings_comp_eff'    => 'UF_WORKPLACE, UF_EFFICIENCY_ALL',
                 'idx_x5pwa_bindings_last_seen'   => 'UF_LAST_SEEN_AT',
-                // v17
                 'idx_x5pwa_bindings_earned'      => 'UF_EARNED_ALL',
                 'idx_x5pwa_bindings_missing'     => 'UF_MISSING_ALL',
+                'idx_x5pwa_bindings_is_test'     => 'UF_IS_TEST',
             ],
             'x5_pwa_steps' => [
                 'idx_x5pwa_steps_uid_status'  => 'UF_UID, UF_STATUS',

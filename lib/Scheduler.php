@@ -28,6 +28,7 @@ class Scheduler
             self::maybeRecalcStats();
             self::maybeRegenerateDumps();
             self::maybeRegenerateStats();
+            self::maybeRunOutbox();
         } catch (\Throwable $e) {
             Settings::logError($e->getMessage(), 'Scheduler::lazyRun');
         }
@@ -109,6 +110,33 @@ class Scheduler
             // флаг сбрасывается внутри Dumper::regenerateAll
         } catch (\Throwable $e) {
             Settings::logError($e->getMessage(), 'Scheduler auto-dump');
+        }
+    }
+
+    /**
+     * Резервный запуск Outbox, если агент не зарегистрирован или
+     * пропускает тик. Работает не чаще Settings::outboxIntervalSec().
+     *
+     * Outbox::run() сам ставит outbox_last_run и держит lockfile,
+     * поэтому при одновременном срабатывании агента и Scheduler
+     * один из запусков тихо пропустится.
+     */
+    private static function maybeRunOutbox(): void
+    {
+        if (!Settings::outboxEnabled()) return;
+
+        $last = Settings::getInt('outbox_last_run', 0);
+        if ($last > 0 && (time() - $last) < Settings::outboxIntervalSec()) {
+            return;
+        }
+
+        try {
+            Outbox::run();
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'Scheduler outbox failed: ' . $e->getMessage(),
+                'Scheduler::maybeRunOutbox'
+            );
         }
     }
 

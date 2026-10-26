@@ -59,6 +59,16 @@ class RewardsBuilder
         if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
             return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'INVALID_UID', 'points' => 0, 'balance' => 0];
         }
+
+        // ── Проверка на тестовый аккаунт ──
+        if (Storage::isTestAccount($uid)) {
+            return [
+                'ok' => true, 'added' => false, 'already' => false,
+                'reason' => 'TEST_ACCOUNT', 'points' => 0, 'balance' => self::getBalance($uid),
+            ];
+        }
+        // ─────────────────────────────────
+
         if (!in_array($actionType, self::ALL_TYPES, true)) {
             return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'INVALID_TYPE', 'points' => 0, 'balance' => self::getBalance($uid)];
         }

@@ -10,6 +10,7 @@
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
 
 use Bitrix\Main\Loader;
+use X5\Pwa\Storage;
 
 $moduleId   = 'x5.pwa';
 $MODULE_RIGHT = $APPLICATION->GetGroupRight($moduleId);
@@ -23,13 +24,23 @@ if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
     LocalRedirect('x5_pwa_users.php?lang=' . LANGUAGE_ID);
 }
 
-$binding = \X5\Pwa\Storage::getUidBinding($uid);
+$binding = Storage::getUidBinding($uid);
 if (!$binding) {
     LocalRedirect('x5_pwa_users.php?lang=' . LANGUAGE_ID);
 }
 
+// ── Обработка переключения тестового аккаунта ──
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()) {
+    $action = (string)($_POST['x5_action'] ?? '');
+    if ($action === 'toggle_test') {
+        $newIsTest = ($binding['UF_IS_TEST'] ?? 'N') !== 'Y'; // инвертируем текущее значение
+        Storage::toggleTestAccount($uid, $newIsTest);
+        LocalRedirect($APPLICATION->GetCurPage() . '?lang=' . LANGUAGE_ID . '&uid=' . urlencode($uid));
+    }
+}
+
 $stats = \X5\Pwa\StatsBuilder::buildUser($uid);
-$sub   = \X5\Pwa\Storage::getSubscription($uid);
+$sub   = Storage::getSubscription($uid);
 
 $selectedHabit      = $stats['SELECTED_HABIT'] ?? null;
 $selectedHabitTitle = null;
@@ -85,7 +96,8 @@ $effColor = function (float $p): string {
 $themeCode     = trim((string)($binding['UF_THEME'] ?? ''));
 $hasConsent    = (bool)($stats['HAS_CONSENT'] ?? false);
 $consentGiven  = (bool)($stats['CONSENT'] ?? false);
-$excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven);
+$isTest        = (bool)($binding['UF_IS_TEST'] === 'Y');
+$excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven || $isTest);
 ?>
 <?php require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php'; ?>
 
@@ -111,6 +123,7 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven);
     .x5pwa-badge-yes { background: #e6f5d8; color: #3a7d1c; }
     .x5pwa-badge-no  { background: #f5e0e0; color: #a52020; }
     .x5pwa-badge-none{ background: #f0f2f5; color: #666; }
+    .x5pwa-badge-test{ background: #fff4e0; color: #8a4b00; border: 1px solid #f5a623; }
     .x5pwa-table { width: 100%; border-collapse: collapse; }
     .x5pwa-table td { padding: 6px 12px; border-bottom: 1px solid #eee; }
     .x5pwa-table td:first-child { width: 40%; }
@@ -140,11 +153,21 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven);
         background:#fff4e0; border:1px solid #f5a623; padding:10px 14px;
         border-radius:6px; margin-bottom:16px; font-size:13px; color:#8a4b00;
     }
+    .x5pwa-test-warn {
+        background:#e8f4ff; border:1px solid #1e6bcc; padding:10px 14px;
+        border-radius:6px; margin-bottom:16px; font-size:13px; color:#1e6bcc;
+    }
 </style>
 
 <div style="margin-bottom:12px">
     <a href="x5_pwa_users.php?lang=<?= LANGUAGE_ID ?>">← Ко всем пользователям</a>
 </div>
+
+<?php if ($isTest): ?>
+    <div class="x5pwa-test-warn">
+        <b>Тестовый аккаунт.</b> Награды не начисляются, статистика не учитывается.
+    </div>
+<?php endif; ?>
 
 <?php if (!$hasConsent || !$consentGiven): ?>
     <div class="x5pwa-warn">
@@ -193,6 +216,24 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven);
                 <span style="color:#a52020">отсутствует</span>
             <?php endif ?>
         </dd>
+        
+        <!-- НОВЫЙ БЛОК: Тестовый аккаунт -->
+        <dt>Тестовый аккаунт</dt>
+        <dd>
+            <?php if ($isTest): ?>
+                <span class="x5pwa-badge x5pwa-badge-test">ТЕСТОВЫЙ</span>
+            <?php else: ?>
+                <span class="x5pwa-badge x5pwa-badge-none">Нет</span>
+            <?php endif ?>
+            <form method="POST" style="display:inline-block; margin-left:12px;">
+                <?= bitrix_sessid_post() ?>
+                <input type="hidden" name="x5_action" value="toggle_test">
+                <button type="submit" class="adm-btn" onclick="return confirm('Переключить статус тестового аккаунта?')">
+                    <?= $isTest ? 'Сделать реальным' : 'Сделать тестовым' ?>
+                </button>
+            </form>
+        </dd>
+
     </dl>
 </div>
 
@@ -272,7 +313,7 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven);
         <?php if ($excludedStats): ?>
             <br>
             <b style="color:#8a4b00">Для этого пользователя кеш не пересчитывается</b>
-            (нет темы и/или нет согласия) — day-метрики и эффективность могут быть неактуальны.
+            (тест, нет темы и/или нет согласия) — day-метрики и эффективность могут быть неактуальны.
         <?php endif ?>
     </div>
 </div>

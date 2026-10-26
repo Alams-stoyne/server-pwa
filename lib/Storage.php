@@ -130,6 +130,7 @@ class Storage
                 ? DateTime::createFromTimestamp((int)($deviceCreatedAt / 1000))
                 : self::now(),
             'UF_BLOCKED'           => 'N',
+            'UF_IS_TEST'           => 'N', // ← по умолчанию обычный
             'UF_TZ_OFFSET_MIN'     => self::DEFAULT_TZ_OFFSET_MIN,
         ]);
     }
@@ -211,6 +212,40 @@ class Storage
         ])->fetch();
         if (!$row) return false;
         return ($row['UF_BLOCKED'] ?? 'N') === 'Y';
+    }
+
+    public static function isTestAccount(string $uid): bool
+    {
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['UF_IS_TEST'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+        if (!$row) return false;
+        return ($row['UF_IS_TEST'] ?? 'N') === 'Y';
+    }
+
+    public static function toggleTestAccount(string $uid, bool $isTest): bool
+    {
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['ID'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+        if (!$row) return false;
+
+        $res = $dc::update((int)$row['ID'], [
+            'UF_IS_TEST' => $isTest ? 'Y' : 'N',
+        ]);
+
+        Settings::log(
+            'toggle-test uid=' . substr($uid, 0, 12) . '… is_test=' . ($isTest ? 'Y' : 'N'),
+            'Storage::toggleTestAccount'
+        );
+
+        return $res->isSuccess();
     }
 
     public static function deleteUser(string $uid): array
@@ -1685,6 +1720,7 @@ class Storage
      * Фильтры:
      *   • согласие на ПД (UF_CONSENT_GRANTED = 'Y');
      *   • не заблокирован;
+     *   • не тестовый аккаунт (UF_IS_TEST != 'Y');
      *   • выбрана тема (UF_THEME != '') — иначе не учитываем в статистике (БМ);
      *   • была активность за последние сутки.
      */
@@ -1701,6 +1737,7 @@ class Storage
             FROM x5_pwa_uid_bindings u
             WHERE u.UF_CONSENT_GRANTED = 'Y'
               AND (u.UF_BLOCKED IS NULL OR u.UF_BLOCKED = 'N')
+              AND (u.UF_IS_TEST IS NULL OR u.UF_IS_TEST != 'Y')
               AND (u.UF_THEME IS NOT NULL AND u.UF_THEME != '')
               AND (
                     u.UF_LAST_SEEN_AT > '{$cutoffSafe}'
@@ -1735,7 +1772,7 @@ class Storage
                 'select' => [
                     'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED',
                     'UF_CREATED_AT', 'UF_TOTAL_STEPS', 'UF_LAST_SEEN_AT',
-                    'UF_HABIT_ID', 'UF_REWARD_BALANCE', 'UF_BLOCKED',
+                    'UF_HABIT_ID', 'UF_REWARD_BALANCE', 'UF_BLOCKED', 'UF_IS_TEST',
                     'UF_EARNED_ALL', 'UF_MAX_ALL', 'UF_MISSING_ALL',
                     'UF_EARNED_DAY', 'UF_MAX_DAY',
                     'UF_EFFICIENCY_ALL', 'UF_EFFICIENCY_DAY',
@@ -1757,6 +1794,7 @@ class Storage
                     'habit_id'        => trim((string)($r['UF_HABIT_ID'] ?? '')),
                     'reward_balance'  => (int)($r['UF_REWARD_BALANCE'] ?? 0),
                     'blocked'         => ($r['UF_BLOCKED'] ?? 'N') === 'Y',
+                    'is_test'         => ($r['UF_IS_TEST'] ?? 'N') === 'Y',
                     'earned_all'      => (int)($r['UF_EARNED_ALL'] ?? 0),
                     'max_all'         => (int)($r['UF_MAX_ALL'] ?? 0),
                     'missing_all'     => (int)($r['UF_MISSING_ALL'] ?? 0),
@@ -1837,7 +1875,7 @@ class Storage
             $dc = self::dataClass('X5PwaUidBindings');
             $row = $dc::getList([
                 'select' => [
-                    'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED', 'UF_BLOCKED',
+                    'UF_UID', 'UF_WORKPLACE', 'UF_THEME', 'UF_CONSENT_GRANTED', 'UF_BLOCKED', 'UF_IS_TEST',
                     'UF_TOTAL_STEPS', 'UF_REWARD_BALANCE',
                     'UF_RANK', 'UF_EFFICIENCY_ALL', 'UF_EFFICIENCY_DAY', 'UF_HABITS_DAYS',
                     'UF_EARNED_ALL', 'UF_MAX_ALL', 'UF_MISSING_ALL',
@@ -1854,6 +1892,7 @@ class Storage
                 'theme'           => trim((string)($row['UF_THEME'] ?? '')),
                 'consent'         => ($row['UF_CONSENT_GRANTED'] ?? '') === 'Y',
                 'blocked'         => ($row['UF_BLOCKED'] ?? 'N') === 'Y',
+                'is_test'         => ($row['UF_IS_TEST'] ?? 'N') === 'Y',
                 'total_steps'     => (int)($row['UF_TOTAL_STEPS'] ?? 0),
                 'reward_balance'  => (int)($row['UF_REWARD_BALANCE'] ?? 0),
                 'rank'            => (int)($row['UF_RANK'] ?? 0),
@@ -1883,7 +1922,8 @@ class Storage
                  FROM x5_pwa_uid_bindings
                  WHERE UF_WORKPLACE = '{$safeWp}'
                    AND UF_CONSENT_GRANTED = 'Y'
-                   AND (UF_BLOCKED IS NULL OR UF_BLOCKED = 'N')"
+                   AND (UF_BLOCKED IS NULL OR UF_BLOCKED = 'N')
+                   AND (UF_IS_TEST IS NULL OR UF_IS_TEST != 'Y')"
             )->fetch();
             return (int)($row['T'] ?? 0);
         } catch (\Throwable $e) {

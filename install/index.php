@@ -51,6 +51,24 @@ class x5_pwa extends CModule
         // Обёртки в /bitrix/admin/
         \X5\Pwa\AdminSetup::install();
 
+        // Агент периодического добора наград (Outbox).
+        // Идемпотентно: сначала сносим старые копии, потом ставим одну.
+        $agentName = '\\X5\\Pwa\\Outbox::run();';
+        $rs = CAgent::GetList([], ['NAME' => $agentName]);
+        while ($a = $rs->Fetch()) {
+            CAgent::Delete($a['ID']);
+        }
+        CAgent::AddAgent(
+            $agentName,
+            $this->MODULE_ID,
+            'N',                 // периодический (не на дату)
+            300,                 // раз в 5 минут
+            '',                  // datecheck — сейчас
+            'Y',                 // active
+            date('d.m.Y H:i:s'), // next_exec
+            'N'
+        );
+
         try {
             \X5\Pwa\Dumper::regenerateAll();
         } catch (\Throwable $e) {
@@ -67,6 +85,9 @@ class x5_pwa extends CModule
         Loader::includeModule('highloadblock');
         Loader::includeModule('iblock');
         Loader::includeModule($this->MODULE_ID);
+
+        // Снимаем агенты модуля до unregister.
+        CAgent::RemoveModuleAgents($this->MODULE_ID);
 
         // Удаляем только наши обёртки
         \X5\Pwa\AdminSetup::uninstall();
