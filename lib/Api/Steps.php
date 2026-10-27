@@ -1,7 +1,6 @@
 <?php
 namespace X5\Pwa\Api;
 
-use X5\Pwa\Settings;
 use X5\Pwa\StatsBuilder;
 use X5\Pwa\StepsBuilder;
 use X5\Pwa\Storage;
@@ -64,12 +63,17 @@ class Steps
      *     RESULT,
      *     TOTAL_STEPS, GOAL, RANK, TOTAL_USERS,
      *     TODAY_STEPS, DAILY_AVG, TOP_PERCENT,
-     *     PROGRESS_PERCENT,           ← % к цели (fallback)
+     *     PROGRESS_PERCENT,
+     *     TODAY_STATUS, TODAY_REJECT_REASON, TODAY_SENT_STEPS,
      *     CONFIRMED_DATES: [YYYY-MM-DD, ...],
      *     CONFIRMED_DAYS_COUNT: int,
      *     PERIOD: {
-     *        FROM, TO,                 ← эффективный период (START..END)
-     *        PLANNED_FROM, PLANNED_TO  ← запланированный (сырые настройки модуля)
+     *        START, END,               ← эффективный период (END зажат к today)
+     *        PLANNED_START, PLANNED_END ← СТАБИЛЬНЫЕ границы (не зависят от today)
+     *        PERIOD_CONFIGURED,         ← bool: задан ли период в админке
+     *        TODAY,
+     *        FROM, TO,                  ← legacy-алиасы START/END
+     *        PLANNED_FROM, PLANNED_TO   ← legacy-алиасы PLANNED_START/END
      *     }
      *   }
      */
@@ -87,21 +91,27 @@ class Steps
 
         $summary = StepsBuilder::getSummary($uid);
 
+        // Эффективный период — для фильтрации confirmed-dates.
         [$periodFrom, $periodTo] = StatsBuilder::getEffectivePeriod();
-
-        $plannedStart = Settings::statsPeriodStart();
-        $plannedEnd   = Settings::statsPeriodEnd();
 
         $confirmedDates = StepsBuilder::getConfirmedDates($uid, $periodFrom, $periodTo);
 
+        // PERIOD — единый контракт с config/period.json (см. Dumper).
+        // Канонические имена: START/END/PLANNED_START/PLANNED_END/PERIOD_CONFIGURED/TODAY.
+        // Legacy-алиасы FROM/TO/PLANNED_FROM/PLANNED_TO — для обратной совместимости:
+        //   • PLANNED_FROM/PLANNED_TO теперь СТАБИЛЬНЫ (при ненастроенном периоде — '2000-01-01'/'2099-12-31',
+        //     а не «clamped to today», как было раньше — именно из-за этого у клиента
+        //     после полуночи некорректно считался «осталось N дней»).
+        $periodPayload = StatsBuilder::buildPeriodPayload();
+
         $summary['CONFIRMED_DATES']      = $confirmedDates;
         $summary['CONFIRMED_DAYS_COUNT'] = count($confirmedDates);
-        $summary['PERIOD'] = [
-            'FROM'         => $periodFrom,
-            'TO'           => $periodTo,
-            'PLANNED_FROM' => $plannedStart !== '' ? $plannedStart : $periodFrom,
-            'PLANNED_TO'   => $plannedEnd   !== '' ? $plannedEnd   : $periodTo,
-        ];
+        $summary['PERIOD'] = array_merge($periodPayload, [
+            'FROM'         => $periodPayload['START'],
+            'TO'           => $periodPayload['END'],
+            'PLANNED_FROM' => $periodPayload['PLANNED_START'],
+            'PLANNED_TO'   => $periodPayload['PLANNED_END'],
+        ]);
 
         return array_merge(['RESULT' => 'OK'], $summary);
     }

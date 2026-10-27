@@ -156,6 +156,37 @@ class Dumper
         return ['sent' => $sent, 'failed' => $failed, 'errors' => $errors, 'elapsed' => $elapsed];
     }
 
+    /**
+     * Формирует контракт config/period.json (и идентичный блок в manifest.json).
+     *
+     * Гарантии:
+     *   • все 6 ключей всегда присутствуют;
+     *   • все значения — строки "YYYY-MM-DD";
+     *   • PLANNED_START/PLANNED_END СТАБИЛЬНЫ между пересборками,
+     *     даже если админ не задал период (тогда 2000-01-01 / 2099-12-31).
+     *
+     * Почему так: если PLANNED_END наследовал END (зажатый к today через
+     * StatsBuilder::getEffectivePeriod), он менялся каждую полночь. Клиент
+     * фильтрует материалы по PLANNED_END и при устаревшем файле (кэш CDN до
+     * 1 часа) скрывал свежие материалы — это и был баг «после полуночи пусто».
+     * Стабильные PLANNED_* устраняют причину, а не симптом.
+     */
+    private static function buildPeriodPayload(string $periodFrom, string $periodTo, string $today): array
+    {
+        $plannedStart = Settings::statsPeriodStart();
+        $plannedEnd   = Settings::statsPeriodEnd();
+        $configured   = ($plannedStart !== '' && $plannedEnd !== '');
+
+        return [
+            'START'             => $periodFrom,
+            'END'               => $periodTo,
+            'PLANNED_START'     => $plannedStart !== '' ? $plannedStart : '2000-01-01',
+            'PLANNED_END'       => $plannedEnd   !== '' ? $plannedEnd   : '2099-12-31',
+            'PERIOD_CONFIGURED' => $configured,
+            'TODAY'             => $today,
+        ];
+    }
+
     public static function regenerateAll(): array
     {
         $startTime = microtime(true);
@@ -324,6 +355,10 @@ class Dumper
             }
         }
 
+        // ── Общий payload для period.json / manifest.period ──
+        // Единый контракт с /steps/summary (см. StatsBuilder::buildPeriodPayload).
+        $periodPayload = StatsBuilder::buildPeriodPayload();
+
         try {
             $map['config/themes.json']     = ThemesBuilder::getAll();
             $map['config/habits.json']     = HabitsBuilder::getAll();
@@ -336,19 +371,10 @@ class Dumper
             ];
             $map['config/workplaces.json'] = WorkplacesBuilder::getForCdn();
 
-            // config/period.json — эффективный период (START..END) +
-            // запланированный (PLANNED_START..PLANNED_END) + TODAY.
-            [$periodFrom, $periodTo] = StatsBuilder::getEffectivePeriod();
-            $plannedStart = Settings::statsPeriodStart();
-            $plannedEnd   = Settings::statsPeriodEnd();
-
-            $map['config/period.json'] = [
-                'START'         => $periodFrom,
-                'END'           => $periodTo,
-                'PLANNED_START' => $plannedStart !== '' ? $plannedStart : $periodFrom,
-                'PLANNED_END'   => $plannedEnd   !== '' ? $plannedEnd   : $periodTo,
-                'TODAY'         => $today,
-            ];
+            // config/period.json — единый контракт с клиентом.
+            // Поля: START, END, PLANNED_START, PLANNED_END, PERIOD_CONFIGURED, TODAY.
+            // Все значения — string "YYYY-MM-DD" (кроме PERIOD_CONFIGURED — bool).
+            $map['config/period.json'] = $periodPayload;
 
             // config/limits_rules.json — правила дневных лимитов
             $map['config/limits_rules.json'] = [
@@ -395,15 +421,23 @@ class Dumper
         }
 
         $sent = 0; $failed = 0; $errors = [];
+
+        // ── manifest.json ──
+        // period-блок: тот же контракт, что и period.json (для клиента).
+        // FROM/TO/PLANNED_FROM/PLANNED_TO оставлены как legacy —
+        // на случай если старая версия клиента их читает.
         $manifest = [
             'updated_at'   => (new \Bitrix\Main\Type\DateTime())->toString(),
             'generated_at' => $today,
-            'period'       => [
-                'FROM'          => $hasPeriod ? $rawFrom : '',
-                'TO'            => $hasPeriod ? $rawTo   : '',
-                'PLANNED_FROM'  => Settings::statsPeriodStart(),
-                'PLANNED_TO'    => Settings::statsPeriodEnd(),
-            ],
+            'period'       => array_merge(
+                $periodPayload,
+                [
+                    'FROM'         => $hasPeriod ? $rawFrom : '',
+                    'TO'           => $hasPeriod ? $rawTo   : '',
+                    'PLANNED_FROM' => Settings::statsPeriodStart(),
+                    'PLANNED_TO'   => Settings::statsPeriodEnd(),
+                ]
+            ),
             'categories'   => $byCategory,
             'files'        => [],
         ];
@@ -447,7 +481,14 @@ class Dumper
 
         Settings::touchDumpTime();
         Settings::set('last_stats_at', (string)(time() * 1000));
+
+        // Сбрасываем все три флага «пересобрать вне очереди»:
+        //   • limits_rules_dirty — пришёл из options.php при смене лимитов;
+        //   • dumps_dirty        — пришёл из options.php при смене периода;
+        //   • regen_dirty        — пришёл из onElementSave при throttle.
         Settings::clearLimitsRulesDirty();
+        Settings::clearDumpsDirty();
+        Settings::clearRegenDirty();
 
         $elapsed = round(microtime(true) - $startTime, 2);
         self::log("===== regenerateAll END sent=$sent failed=$failed elapsed={$elapsed}s =====");

@@ -90,14 +90,20 @@ class Scheduler
     /**
      * Пересборка полных дампов.
      *
-     * Обычно — раз в 24 часа. Но если админ изменил настройки дневных
-     * лимитов (daily_*_limit), settings-слой ставит флаг limits_rules_dirty=1 —
-     * тогда пересобираем вне очереди, чтобы config/limits_rules.json
-     * на CDN обновился как можно скорее (в течение тика scheduler, ~60 сек).
+     * Обычно — раз в 24 часа. Вне очереди пересобираем, если стоит любой
+     * из «грязных» флагов:
+     *   • limits_rules_dirty — админ изменил дневные лимиты;
+     *   • dumps_dirty        — админ изменил период (PLANNED_START/END);
+     *   • regen_dirty        — элемент ИБ сохранён в окне throttle
+     *                          (Dumper::onElementSave не смог сразу
+     *                          пересобрать и отложил).
      */
     private static function maybeRegenerateDumps(): void
     {
-        $dirty    = Settings::limitsRulesDirty();
+        $dirty = Settings::limitsRulesDirty()
+              || Settings::dumpsDirty()
+              || Settings::regenDirty();
+
         $lastDump = Settings::lastDumpAt();
 
         if (!$dirty && $lastDump > 0
@@ -105,9 +111,19 @@ class Scheduler
             return;
         }
 
+        if ($dirty) {
+            Settings::log(
+                'forcing dump: limits_rules_dirty='
+                . (Settings::limitsRulesDirty() ? 'Y' : 'N')
+                . ' dumps_dirty=' . (Settings::dumpsDirty() ? 'Y' : 'N')
+                . ' regen_dirty=' . (Settings::regenDirty() ? 'Y' : 'N'),
+                'Scheduler auto-dump'
+            );
+        }
+
         try {
             Dumper::regenerateAll();
-            // флаг сбрасывается внутри Dumper::regenerateAll
+            // флаги сбрасываются внутри Dumper::regenerateAll
         } catch (\Throwable $e) {
             Settings::logError($e->getMessage(), 'Scheduler auto-dump');
         }

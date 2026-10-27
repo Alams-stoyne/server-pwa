@@ -290,6 +290,36 @@ class Settings
         self::set('limits_rules_dirty', '0');
     }
 
+    // ── Флаг пересборки дампов вне очереди (общий) ──
+    // Ставится при любом изменении настроек, влияющих на содержимое дампов
+    // (например, смена периода статистики). Scheduler увидит флаг и
+    // пересоберёт всё вне очереди, не дожидаясь 24-часового интервала.
+    public static function dumpsDirty(): bool
+    {
+        return self::getBool('dumps_dirty', false);
+    }
+
+    public static function markDumpsDirty(): void
+    {
+        self::set('dumps_dirty', 'Y');
+    }
+
+    public static function clearDumpsDirty(): void
+    {
+        self::set('dumps_dirty', 'N');
+    }
+
+    // ── Флаг отложенной пересборки (ставится Dumper'ом при throttle) ──
+    public static function regenDirty(): bool
+    {
+        return self::get('regen_dirty', '0') === '1';
+    }
+
+    public static function clearRegenDirty(): void
+    {
+        self::set('regen_dirty', '0');
+    }
+
     // ── Outbox наград ──
     public static function outboxEnabled(): bool
     {

@@ -31,6 +31,40 @@ class StatsBuilder
         return [$start, $end];
     }
 
+    /**
+     * Единый payload «периода» — используется и в config/period.json
+     * (Dumper), и в /steps/summary (Api\Steps). Гарантирует одинаковый
+     * контракт в обоих эндпоинтах.
+     *
+     * Ключи (все присутствуют всегда, значения — string "YYYY-MM-DD",
+     * кроме PERIOD_CONFIGURED — bool):
+     *   • START / END                 — эффективный период (END зажат к today,
+     *                                    используется для арки прогресса);
+     *   • PLANNED_START / PLANNED_END — СТАБИЛЬНЫЕ границы, НЕ зависят от today.
+     *                                    Если период не задан — '2000-01-01' /
+     *                                    '2099-12-31' (чтобы клиент не «прыгал»
+     *                                    и не прятал свежие материалы после полуночи);
+     *   • PERIOD_CONFIGURED           — true, если админ задал оба поля;
+     *   • TODAY                       — серверная сегодняшняя дата.
+     */
+    public static function buildPeriodPayload(): array
+    {
+        [$periodFrom, $periodTo] = self::getEffectivePeriod();
+
+        $plannedStart = Settings::statsPeriodStart();
+        $plannedEnd   = Settings::statsPeriodEnd();
+        $configured   = ($plannedStart !== '' && $plannedEnd !== '');
+
+        return [
+            'START'             => $periodFrom,
+            'END'               => $periodTo,
+            'PLANNED_START'     => $plannedStart !== '' ? $plannedStart : '2000-01-01',
+            'PLANNED_END'       => $plannedEnd   !== '' ? $plannedEnd   : '2099-12-31',
+            'PERIOD_CONFIGURED' => $configured,
+            'TODAY'             => date('Y-m-d'),
+        ];
+    }
+
     private static function resolveAutoStart(): string
     {
         $today = date('Y-m-d');

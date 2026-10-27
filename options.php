@@ -36,6 +36,21 @@ if ($isPost) {
         $error = 'Период статистики: дата старта не может быть позже даты конца.';
         $periodOk = false;
     }
+
+    // Валидация «оба или ни одного»: если задано только одно поле —
+    // PLANNED_END будет fallback'аться на END (зажатый к today) и
+    // клиент снова получит нестабильный контракт (баг «после полуночи пусто»).
+    // Поэтому запрещаем сохранять «наполовину заданный» период.
+    if ($periodOk) {
+        $startEmpty = ($periodStartRaw === '');
+        $endEmpty   = ($periodEndRaw === '');
+        if ($startEmpty !== $endEmpty) {
+            $error = 'Период статистики: задайте обе даты (start и end) или оставьте обе пустыми. '
+                   . 'Иначе PLANNED_START/PLANNED_END на клиенте будут нестабильны '
+                   . 'и материалы могут пропадать после полуночи.';
+            $periodOk = false;
+        }
+    }
 }
 
 $saveFormFields = function () use ($request, $module_id): void {
@@ -139,8 +154,19 @@ if ($isPost && $request->getPost('restore') !== null) {
 if ($isPost) $saveFormFields();
 
 if ($isPost && $periodOk) {
+    // Сравниваем со старыми значениями, чтобы поставить dumps_dirty
+    // только при реальном изменении. Это заставит Scheduler пересобрать
+    // config/period.json (и весь набор дампов) вне очереди — иначе
+    // PLANNED_* на CDN останутся старыми до 24 часов.
+    $oldPeriodStart = (string)Option::get($module_id, 'stats_period_start', '');
+    $oldPeriodEnd   = (string)Option::get($module_id, 'stats_period_end',   '');
+
     Option::set($module_id, 'stats_period_start', $periodStartRaw);
     Option::set($module_id, 'stats_period_end',   $periodEndRaw);
+
+    if ($oldPeriodStart !== $periodStartRaw || $oldPeriodEnd !== $periodEndRaw) {
+        \X5\Pwa\Settings::markDumpsDirty();
+    }
 }
 
 // ─── Очистка лога ───
@@ -615,6 +641,25 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
             <div class="adm-info-message" style="margin-top:6px">
                 Пусто — авто: сегодня. После этой даты активности не учитываются в расчётах.
                 После сохранения обновите <code>stats/global.json</code> (кнопка «Обновить статистику»).
+            </div>
+        </td>
+    </tr>
+    <tr>
+        <td colspan="2">
+            <div class="adm-info-message" style="margin-top:6px;border-left:4px solid #d9a000;padding-left:10px">
+                <b>Важно про PLANNED_START / PLANNED_END в <code>config/period.json</code>.</b><br>
+                Клиент фильтрует материалы по <code>PLANNED_*</code> — эти даты должны быть
+                <b>стабильны между пересборками</b>, иначе после полуночи свежие материалы
+                пропадают с экрана.<br><br>
+                Если задано <b>оба поля</b> — <code>PLANNED_* = START/END</code> (стабильно).<br>
+                Если <b>оба пусты</b> — <code>PLANNED_START='2000-01-01'</code>,
+                <code>PLANNED_END='2099-12-31'</code> (тоже стабильно, клиент не прячет материалы).<br>
+                <b>Одно поле задать нельзя</b> — валидация не даст сохранить «полу-период»,
+                потому что тогда <code>PLANNED_*</code> будет унаследован от <code>END</code>
+                (зажатого к сегодня) и снова начнёт «прыгать».<br><br>
+                Флаг <code>PERIOD_CONFIGURED</code> в <code>period.json</code> сигнализирует
+                клиенту, задан ли период явно: <code>true</code> — можно показывать арку
+                прогресса и реальные даты марафона, <code>false</code> — период не настроен.
             </div>
         </td>
     </tr>
