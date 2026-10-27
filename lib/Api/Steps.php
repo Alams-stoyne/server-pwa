@@ -35,14 +35,21 @@ class Steps
 
         $result = StepsBuilder::send(
             $uid,
-            $b['STEPS']  ?? null,
-            $b['IMAGES'] ?? null,
-            $b['CONSENT']?? null,
+            $b['STEPS']   ?? null,
+            $b['IMAGES']  ?? null,
+            $b['CONSENT'] ?? null,
             $localDate
         );
 
         if (($result['RESULT'] ?? '') === 'OK') {
             Storage::touchBindingByUid($uid);
+        }
+
+        // Прикрепляем актуальный статус «за сегодня», чтобы клиенту
+        // не нужно было делать повторный /steps/summary после send().
+        $resCode = (string)($result['RESULT'] ?? '');
+        if (in_array($resCode, ['OK', 'ALREADY_SENT_TODAY'], true)) {
+            $result = array_merge($result, StepsBuilder::getTodayStatus($uid, $localDate));
         }
 
         return $result;

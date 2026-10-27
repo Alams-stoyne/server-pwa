@@ -1,10 +1,6 @@
 <?php
 /**
  * Детальная статистика пользователя.
- *
- * Все количественные метрики активности продублированы в двух разрезах:
- * «за период» (stats_period_start..stats_period_end) и «за всё время».
- * Дополнительно — «за сегодня» в блоке «Эффективность».
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -165,7 +161,7 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven || $isTest
 
 <?php if ($isTest): ?>
     <div class="x5pwa-test-warn">
-        <b>Тестовый аккаунт.</b> Награды не начисляются, статистика не учитывается.
+        <b>Тестовый аккаунт.</b> Пользователь имеет полный доступ к функциям приложения, но исключён из общей статистики, рейтингов и отчетов по компаниям (числится в «Техническом» месте работы).
     </div>
 <?php endif; ?>
 
@@ -173,8 +169,6 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven || $isTest
     <div class="x5pwa-warn">
         <b>Нет согласия на обработку ПД.</b>
         Пользователь не участвует в статистике — эффективность и day-метрики не пересчитываются.
-        Данные на странице показывают «сырые» значения из журнала наград и HL, но в агрегатах
-        (общая статистика, компании, шапка users.php) этот пользователь исключён.
     </div>
 <?php elseif ($themeCode === ''): ?>
     <div class="x5pwa-warn">
@@ -222,6 +216,7 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven || $isTest
         <dd>
             <?php if ($isTest): ?>
                 <span class="x5pwa-badge x5pwa-badge-test">ТЕСТОВЫЙ</span>
+                <span style="color:#888;font-size:12px;margin-left:8px;">(Место работы: __TEST__)</span>
             <?php else: ?>
                 <span class="x5pwa-badge x5pwa-badge-none">Нет</span>
             <?php endif ?>
@@ -428,8 +423,7 @@ $excludedStats = ($themeCode === '' || !$hasConsent || !$consentGiven || $isTest
             <div class="x5pwa-metric-label">Баланс (за всё время)</div>
         </div>
         <div class="x5pwa-metric" style="display:flex;align-items:center;justify-content:center">
-            <a href="x5_pwa_rewards.php?lang=<?= LANGUAGE_ID ?>&UID=<?= urlencode($uid) ?>"
-               class="adm-btn">Полная история →</a>
+            <a href="x5_pwa_rewards.php?lang=<?= LANGUAGE_ID ?>&set_filter=Y&apply_filter=Y&find_UID=<?= urlencode($uid) ?>" class="adm-btn">Полная история →</a>
         </div>
     </div>
 </div>

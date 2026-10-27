@@ -6,7 +6,6 @@ use Bitrix\Main\Entity\ExpressionField;
 class RewardsBuilder
 {
     public const TYPE_HABIT           = 'habit';
-    /** @deprecated */
     public const TYPE_LECTURE         = 'lecture';
     public const TYPE_LECTURE_GENERAL = 'lecture_general';
     public const TYPE_LECTURE_THEME   = 'lecture_theme';
@@ -18,16 +17,9 @@ class RewardsBuilder
     public const TYPE_EVENT           = 'event';
 
     public const ALL_TYPES = [
-        self::TYPE_HABIT,
-        self::TYPE_LECTURE,
-        self::TYPE_LECTURE_GENERAL,
-        self::TYPE_LECTURE_THEME,
-        self::TYPE_CHARGING,
-        self::TYPE_TASK,
-        self::TYPE_REFLECTION,
-        self::TYPE_STEPS_SENT,
-        self::TYPE_STEPS_APPROVED,
-        self::TYPE_EVENT,
+        self::TYPE_HABIT, self::TYPE_LECTURE, self::TYPE_LECTURE_GENERAL,
+        self::TYPE_LECTURE_THEME, self::TYPE_CHARGING, self::TYPE_TASK,
+        self::TYPE_REFLECTION, self::TYPE_STEPS_SENT, self::TYPE_STEPS_APPROVED, self::TYPE_EVENT,
     ];
 
     public const TITLES = [
@@ -59,16 +51,6 @@ class RewardsBuilder
         if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
             return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'INVALID_UID', 'points' => 0, 'balance' => 0];
         }
-
-        // ── Проверка на тестовый аккаунт ──
-        if (Storage::isTestAccount($uid)) {
-            return [
-                'ok' => true, 'added' => false, 'already' => false,
-                'reason' => 'TEST_ACCOUNT', 'points' => 0, 'balance' => self::getBalance($uid),
-            ];
-        }
-        // ─────────────────────────────────
-
         if (!in_array($actionType, self::ALL_TYPES, true)) {
             return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'INVALID_TYPE', 'points' => 0, 'balance' => self::getBalance($uid)];
         }
@@ -114,9 +96,7 @@ class RewardsBuilder
             ]);
         } catch (\Throwable $e) {
             $msg = $e->getMessage();
-            if (strpos($msg, '1062') !== false
-                || stripos($msg, 'Duplicate entry') !== false
-                || stripos($msg, 'uniq_x5pwa_reward_key') !== false) {
+            if (strpos($msg, '1062') !== false || stripos($msg, 'Duplicate entry') !== false || stripos($msg, 'uniq_x5pwa_reward_key') !== false) {
                 return [
                     'ok'      => true,
                     'added'   => false,
@@ -164,51 +144,24 @@ class RewardsBuilder
     private static function checkDailyLimit(string $uid, string $actionType, string $localDate): array
     {
         $limitsMap = [
-            self::TYPE_LECTURE_GENERAL => [
-                'limit' => Settings::dailyGeneralLectureLimit(),
-                'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_GENERAL],
-            ],
-            self::TYPE_LECTURE_THEME => [
-                'limit' => Settings::dailyThemeLectureLimit(),
-                'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME],
-            ],
-            self::TYPE_LECTURE => [
-                'limit' => Settings::dailyThemeLectureLimit(),
-                'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME],
-            ],
-            self::TYPE_CHARGING => [
-                'limit' => Settings::dailyChargingLimit(),
-                'types' => [self::TYPE_CHARGING],
-            ],
-            self::TYPE_TASK => [
-                'limit' => Settings::dailyTaskLimit(),
-                'types' => [self::TYPE_TASK],
-            ],
+            self::TYPE_LECTURE_GENERAL => ['limit' => Settings::dailyGeneralLectureLimit(), 'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_GENERAL]],
+            self::TYPE_LECTURE_THEME   => ['limit' => Settings::dailyThemeLectureLimit(), 'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME]],
+            self::TYPE_LECTURE         => ['limit' => Settings::dailyThemeLectureLimit(), 'types' => [self::TYPE_LECTURE, self::TYPE_LECTURE_THEME]],
+            self::TYPE_CHARGING        => ['limit' => Settings::dailyChargingLimit(), 'types' => [self::TYPE_CHARGING]],
+            self::TYPE_TASK            => ['limit' => Settings::dailyTaskLimit(), 'types' => [self::TYPE_TASK]],
         ];
 
-        if (!isset($limitsMap[$actionType])) {
-            return ['ok' => true];
-        }
-
+        if (!isset($limitsMap[$actionType])) return ['ok' => true];
         $limit = (int)$limitsMap[$actionType]['limit'];
-        if ($limit <= 0) {
-            return ['ok' => true];
-        }
-
+        if ($limit <= 0) return ['ok' => true];
         $types = $limitsMap[$actionType]['types'];
-        if (!$types) {
-            return ['ok' => true];
-        }
+        if (!$types) return ['ok' => true];
 
         try {
             $dc = Storage::dataClass('X5PwaRewardLog');
             $row = $dc::getList([
                 'select'  => ['CNT'],
-                'filter'  => [
-                    '=UF_UID'         => $uid,
-                    '=UF_LOCAL_DATE'  => $localDate,
-                    '=UF_ACTION_TYPE' => $types,
-                ],
+                'filter'  => ['=UF_UID' => $uid, '=UF_LOCAL_DATE' => $localDate, '=UF_ACTION_TYPE' => $types],
                 'runtime' => [new ExpressionField('CNT', 'COUNT(*)')],
             ])->fetch();
             $count = (int)($row['CNT'] ?? 0);
@@ -231,127 +184,45 @@ class RewardsBuilder
     {
         $timesPerDay = (int)($habitCfg['timesPerDay'] ?? 1);
         $points      = (int)($habitCfg['rewardPoints'] ?? 0);
-
-        if ($timesPerDay < 1 || $doneToday < $timesPerDay) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NOT_DONE_YET', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
-        if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
-
+        if ($timesPerDay < 1 || $doneToday < $timesPerDay) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NOT_DONE_YET', 'points' => 0, 'balance' => self::getBalance($uid)];
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         $habitId = (string)($habitCfg['id'] ?? '');
-        if ($habitId === '') {
-            return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'NO_HABIT_ID', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
+        if ($habitId === '') return ['ok' => false, 'added' => false, 'already' => false, 'reason' => 'NO_HABIT_ID', 'points' => 0, 'balance' => self::getBalance($uid)];
 
-        return self::award(
-            $uid,
-            self::TYPE_HABIT,
-            $habitId . ':' . $localDate,
-            $points,
-            (string)($habitCfg['title'] ?? ''),
-            $localDate
-        );
+        return self::award($uid, self::TYPE_HABIT, $habitId . ':' . $localDate, $points, (string)($habitCfg['title'] ?? ''), $localDate);
     }
 
-    public static function awardLecture(
-        string $uid,
-        int $elementId,
-        string $elementType,
-        int $points,
-        string $title,
-        string $elementDate,
-        string $localDate,
-        string $source = ''
-    ): array {
-        if ($elementDate !== $localDate) {
-            return [
-                'ok' => true, 'added' => false, 'already' => false,
-                'reason' => 'ELEMENT_DATE_MISMATCH',
-                'elementDate' => $elementDate, 'localDate' => $localDate,
-                'points' => 0, 'balance' => self::getBalance($uid),
-            ];
-        }
-        if ($points <= 0) {
-            return [
-                'ok' => true, 'added' => false, 'already' => false,
-                'reason' => 'NO_POINTS',
-                'points' => 0, 'balance' => self::getBalance($uid),
-            ];
-        }
+    public static function awardLecture(string $uid, int $elementId, string $elementType, int $points, string $title, string $elementDate, string $localDate, string $source = ''): array
+    {
+        if ($elementDate !== $localDate) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'ELEMENT_DATE_MISMATCH', 'elementDate' => $elementDate, 'localDate' => $localDate, 'points' => 0, 'balance' => self::getBalance($uid)];
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
 
-        if ($source === 'general') {
-            $actionType = self::TYPE_LECTURE_GENERAL;
-        } elseif ($source === 'theme') {
-            $actionType = self::TYPE_LECTURE_THEME;
-        } elseif ($elementType === 'charging') {
-            $actionType = self::TYPE_CHARGING;
-        } else {
-            $actionType = self::TYPE_LECTURE;
-        }
+        if ($source === 'general') $actionType = self::TYPE_LECTURE_GENERAL;
+        elseif ($source === 'theme') $actionType = self::TYPE_LECTURE_THEME;
+        elseif ($elementType === 'charging') $actionType = self::TYPE_CHARGING;
+        else $actionType = self::TYPE_LECTURE;
 
-        return self::award(
-            $uid,
-            $actionType,
-            $elementId . ':' . $localDate,
-            $points,
-            $title,
-            $localDate
-        );
+        return self::award($uid, $actionType, $elementId . ':' . $localDate, $points, $title, $localDate);
     }
 
-    public static function awardTask(
-        string $uid,
-        int $elementId,
-        int $points,
-        string $title,
-        string $elementDate,
-        string $localDate
-    ): array {
-        if ($elementDate !== $localDate) {
-            return [
-                'ok' => true, 'added' => false, 'already' => false,
-                'reason' => 'ELEMENT_DATE_MISMATCH',
-                'elementDate' => $elementDate, 'localDate' => $localDate,
-                'points' => 0, 'balance' => self::getBalance($uid),
-            ];
-        }
-        if ($points <= 0) {
-            return [
-                'ok' => true, 'added' => false, 'already' => false,
-                'reason' => 'NO_POINTS',
-                'points' => 0, 'balance' => self::getBalance($uid),
-            ];
-        }
+    public static function awardTask(string $uid, int $elementId, int $points, string $title, string $elementDate, string $localDate): array
+    {
+        if ($elementDate !== $localDate) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'ELEMENT_DATE_MISMATCH', 'elementDate' => $elementDate, 'localDate' => $localDate, 'points' => 0, 'balance' => self::getBalance($uid)];
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
 
-        return self::award(
-            $uid,
-            self::TYPE_TASK,
-            $elementId . ':' . $localDate,
-            $points,
-            $title,
-            $localDate
-        );
+        return self::award($uid, self::TYPE_TASK, $elementId . ':' . $localDate, $points, $title, $localDate);
     }
 
     public static function awardReflection(string $uid, string $localDate): array
     {
-        $points = 0;
-        $title  = 'Рефлексия за ' . $localDate;
-
+        $points = 0; $title = 'Рефлексия за ' . $localDate;
         try {
             $setting = ReflectionBuilder::getForDate($localDate);
-            if (!empty($setting['title'])) {
-                $title = 'Рефлексия: ' . $setting['title'];
-            }
+            if (!empty($setting['title'])) $title = 'Рефлексия: ' . $setting['title'];
             $points = (int)($setting['rewardPoints'] ?? 0);
         } catch (\Throwable $e) {}
-
         if ($points <= 0) $points = Settings::rewardReflectionPoints();
-
-        if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
 
         return self::award($uid, self::TYPE_REFLECTION, $localDate, $points, $title, $localDate);
     }
@@ -359,215 +230,103 @@ class RewardsBuilder
     public static function awardStepsSent(string $uid, string $localDate): array
     {
         $points = Settings::rewardStepsSentPoints();
-        if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         return self::award($uid, self::TYPE_STEPS_SENT, $localDate, $points, 'Шаги за ' . $localDate, $localDate);
     }
 
     public static function awardStepsApproved(string $uid, string $stepsLocalDate): array
     {
         $points = Settings::rewardStepsApprovedPoints();
-        if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         return self::award($uid, self::TYPE_STEPS_APPROVED, $stepsLocalDate, $points, 'Шаги подтверждены за ' . $stepsLocalDate, $stepsLocalDate);
     }
 
-    public static function awardEvent(
-        string $uid,
-        string $eventId,
-        int $points,
-        string $title,
-        string $localDate
-    ): array {
-        if ($points <= 0) {
-            return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
-        }
-
+    public static function awardEvent(string $uid, string $eventId, int $points, string $title, string $localDate): array
+    {
+        if ($points <= 0) return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
         return self::award($uid, self::TYPE_EVENT, $eventId, $points, $title, $localDate);
     }
 
-    /**
-     * @return array{type:string, source:string, title:string, date:string, points:int}|null
-     */
     public static function resolveLectureInfo(int $elementId): ?array
     {
         if ($elementId <= 0) return null;
-
         $ibGeneral  = (int)Settings::iblockId('general_lectures');
         $ibCharging = (int)Settings::iblockId('charging');
         $ibTheme    = (int)Settings::iblockId('theme_lectures');
-
         $ibIds = array_values(array_filter([$ibGeneral, $ibCharging, $ibTheme]));
         if (!$ibIds) return null;
 
-        $rs = \CIBlockElement::GetList(
-            ['ID' => 'ASC'],
-            ['ID' => $elementId, 'IBLOCK_ID' => $ibIds, 'CHECK_PERMISSIONS' => 'N'],
-            false,
-            ['nTopCount' => 1],
-            ['ID', 'IBLOCK_ID', 'NAME', 'ACTIVE_FROM', 'DATE_ACTIVE_FROM']
-        );
+        $rs = \CIBlockElement::GetList(['ID' => 'ASC'], ['ID' => $elementId, 'IBLOCK_ID' => $ibIds, 'CHECK_PERMISSIONS' => 'N'], false, ['nTopCount' => 1], ['ID', 'IBLOCK_ID', 'NAME', 'ACTIVE_FROM', 'DATE_ACTIVE_FROM']);
         if (!$el = $rs->Fetch()) return null;
 
         $ibId = (int)$el['IBLOCK_ID'];
         $type   = $ibId === $ibCharging ? 'charging' : 'lecture';
         $source = 'theme';
-        if ($ibId === $ibGeneral)  $source = 'general';
-        elseif ($ibId === $ibCharging) $source = 'charging';
+        if ($ibId === $ibGeneral) $source = 'general'; elseif ($ibId === $ibCharging) $source = 'charging';
 
         $dateStr = '';
         foreach ([$el['ACTIVE_FROM'] ?? '', $el['DATE_ACTIVE_FROM'] ?? ''] as $raw) {
-            $raw = trim((string)$raw);
-            if ($raw === '') continue;
-            $ts = \MakeTimeStamp($raw, \FORMAT_DATETIME);
-            if ($ts <= 0) $ts = strtotime($raw);
+            $raw = trim((string)$raw); if ($raw === '') continue;
+            $ts = \MakeTimeStamp($raw, \FORMAT_DATETIME); if ($ts <= 0) $ts = strtotime($raw);
             if ($ts > 0) { $dateStr = date('Y-m-d', $ts); break; }
         }
         if ($dateStr === '') return null;
 
         $points = 0;
         $props = \CIBlockElement::GetProperty($ibId, $elementId, [], ['CODE' => 'REWARD_POINTS']);
-        if ($p = $props->Fetch()) {
-            $points = max(0, (int)($p['VALUE'] ?? 0));
-        }
+        if ($p = $props->Fetch()) $points = max(0, (int)($p['VALUE'] ?? 0));
 
-        return [
-            'type'   => $type,
-            'source' => $source,
-            'title'  => (string)$el['NAME'],
-            'date'   => $dateStr,
-            'points' => $points,
-        ];
+        return ['type' => $type, 'source' => $source, 'title' => (string)$el['NAME'], 'date' => $dateStr, 'points' => $points];
     }
 
     public static function resolveTaskInfo(int $elementId): ?array
     {
         if ($elementId <= 0) return null;
-
         $ibId = (int)Settings::iblockId('tasks');
         if ($ibId <= 0) return null;
 
-        $rs = \CIBlockElement::GetList(
-            ['ID' => 'ASC'],
-            ['ID' => $elementId, 'IBLOCK_ID' => $ibId, 'CHECK_PERMISSIONS' => 'N'],
-            false,
-            ['nTopCount' => 1],
-            ['ID', 'NAME', 'ACTIVE_FROM', 'DATE_ACTIVE_FROM']
-        );
+        $rs = \CIBlockElement::GetList(['ID' => 'ASC'], ['ID' => $elementId, 'IBLOCK_ID' => $ibId, 'CHECK_PERMISSIONS' => 'N'], false, ['nTopCount' => 1], ['ID', 'NAME', 'ACTIVE_FROM', 'DATE_ACTIVE_FROM']);
         if (!$el = $rs->Fetch()) return null;
 
         $dateStr = '';
         foreach ([$el['ACTIVE_FROM'] ?? '', $el['DATE_ACTIVE_FROM'] ?? ''] as $raw) {
-            $raw = trim((string)$raw);
-            if ($raw === '') continue;
-            $ts = \MakeTimeStamp($raw, \FORMAT_DATETIME);
-            if ($ts <= 0) $ts = strtotime($raw);
+            $raw = trim((string)$raw); if ($raw === '') continue;
+            $ts = \MakeTimeStamp($raw, \FORMAT_DATETIME); if ($ts <= 0) $ts = strtotime($raw);
             if ($ts > 0) { $dateStr = date('Y-m-d', $ts); break; }
         }
         if ($dateStr === '') return null;
 
         $points = 0;
         $props = \CIBlockElement::GetProperty($ibId, $elementId, [], ['CODE' => 'REWARD_POINTS']);
-        if ($p = $props->Fetch()) {
-            $points = max(0, (int)($p['VALUE'] ?? 0));
-        }
+        if ($p = $props->Fetch()) $points = max(0, (int)($p['VALUE'] ?? 0));
 
-        return [
-            'title'  => (string)$el['NAME'],
-            'date'   => $dateStr,
-            'points' => $points,
-        ];
+        return ['title' => (string)$el['NAME'], 'date' => $dateStr, 'points' => $points];
     }
 
-    /**
-     * Резолвит любой ID (numeric / CODE / с префиксом и датой) в числовой ID элемента ИБ.
-     *
-     * Поддерживаемые форматы:
-     *   "5"                                      — numeric ID
-     *   "5-2026-10-25"                           — numeric ID + date
-     *   "2026-10-25:5-2026-10-25"                — prefix-date + numeric ID + date
-     *   "stress-relief-1"                        — CODE
-     *   "stress-relief-1-2026-10-25"             — CODE + date
-     *   "2026-10-25:stress-relief-1-2026-10-25"  — prefix-date + CODE + date
-     *   "lecture-charging:2026-10-25:code-2026-10-25" — prefix-type + prefix-date + CODE + date
-     *
-     * Порядок операций: сначала дата (структурный суффикс), потом префикс до последнего ':'.
-     * Если задан $candidateKeys — ищем CODE только в этих инфоблоках.
-     *
-     * @param string[]|null $candidateKeys ключи из Settings::iblockId()
-     */
     public static function resolveElementIdFromAny(string $rawId, ?array $candidateKeys = null): ?int
     {
-        $rawId = trim($rawId);
+        $rawId = trim($rawId); if ($rawId === '') return null;
+        if (preg_match('/^(.+?)-\d{4}-\d{2}-\d{2}$/', $rawId, $m)) $rawId = $m[1];
+        if (($pos = strrpos($rawId, ':')) !== false) $rawId = substr($rawId, $pos + 1);
         if ($rawId === '') return null;
-
-        // 1) снять хвостовой -YYYY-MM-DD
-        if (preg_match('/^(.+?)-\d{4}-\d{2}-\d{2}$/', $rawId, $m)) {
-            $rawId = $m[1];
-        }
-
-        // 2) снять префикс до последнего ':'
-        if (($pos = strrpos($rawId, ':')) !== false) {
-            $rawId = substr($rawId, $pos + 1);
-        }
-
-        if ($rawId === '') return null;
-
-        if (ctype_digit($rawId)) {
-            return (int)$rawId;
-        }
+        if (ctype_digit($rawId)) return (int)$rawId;
 
         $keys = $candidateKeys ?: ['general_lectures', 'charging', 'theme_lectures', 'tasks'];
-
         foreach ($keys as $key) {
-            $ibId = (int)Settings::iblockId($key);
-            if ($ibId <= 0) continue;
-
-            $rs = \CIBlockElement::GetList(
-                ['ID' => 'ASC'],
-                [
-                    'IBLOCK_ID'         => $ibId,
-                    '=CODE'             => $rawId,
-                    'CHECK_PERMISSIONS' => 'N',
-                ],
-                false,
-                ['nTopCount' => 1],
-                ['ID']
-            );
-            if ($el = $rs->Fetch()) {
-                return (int)$el['ID'];
-            }
+            $ibId = (int)Settings::iblockId($key); if ($ibId <= 0) continue;
+            $rs = \CIBlockElement::GetList(['ID' => 'ASC'], ['IBLOCK_ID' => $ibId, '=CODE' => $rawId, 'CHECK_PERMISSIONS' => 'N'], false, ['nTopCount' => 1], ['ID']);
+            if ($el = $rs->Fetch()) return (int)$el['ID'];
         }
-
         return null;
     }
 
-    public static function getBalance(string $uid): int
-    {
-        return Storage::getRewardBalance($uid);
-    }
-
-    public static function recalcBalance(string $uid): int
-    {
-        return Storage::recalcRewardBalance($uid);
-    }
-
-    public static function history(string $uid, array $params = []): array
-    {
-        return Storage::getRewardHistory($uid, $params);
-    }
-
-    public static function userLocalDate(string $uid): string
-    {
+    public static function getBalance(string $uid): int { return Storage::getRewardBalance($uid); }
+    public static function recalcBalance(string $uid): int { return Storage::recalcRewardBalance($uid); }
+    public static function history(string $uid, array $params = []): array { return Storage::getRewardHistory($uid, $params); }
+    public static function userLocalDate(string $uid): string {
         $tzOffsetMin = Storage::getUserTzOffsetMin($uid);
         $localMs     = (time() * 1000) + $tzOffsetMin * 60 * 1000;
         return gmdate('Y-m-d', (int)($localMs / 1000));
     }
-
-    public static function typeTitle(string $type): string
-    {
-        return self::TITLES[$type] ?? $type;
-    }
+    public static function typeTitle(string $type): string { return self::TITLES[$type] ?? $type; }
 }

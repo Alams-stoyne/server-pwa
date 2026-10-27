@@ -59,6 +59,15 @@ function x5rwFilterValue(array $arFilter, string $field): string
 }
 
 $uidQuery  = x5rwFilterValue($arFilter, 'UID');
+// Fallback: если AddFilter не применил фильтр (нет apply_filter=Y или передан UID без префикса),
+// читаем UID напрямую из запроса.
+if ($uidQuery === '') {
+    foreach (['find_UID', '~UID', '?UID', 'UID'] as $k) {
+        $v = trim((string)($_REQUEST[$k] ?? ''));
+        if ($v !== '') { $uidQuery = $v; break; }
+    }
+}
+
 $type      = x5rwFilterValue($arFilter, 'TYPE');
 $dateFrom  = x5rwFilterValue($arFilter, 'LOCAL_DATE_from');
 $dateTo    = x5rwFilterValue($arFilter, 'LOCAL_DATE_to');
