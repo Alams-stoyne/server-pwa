@@ -3,6 +3,7 @@ namespace X5\Pwa\Api;
 
 use X5\Pwa\Cors;
 use X5\Pwa\Push;
+use X5\Pwa\Storage;
 
 class Router
 {
@@ -49,6 +50,28 @@ class Router
     {
         $body = self::readBody();
 
+        // ─── Глобальная проверка блокировки ───
+        $uid = (string)($body['ID_USER'] ?? $body['UID'] ?? $body['uid'] ?? $_GET['ID_USER'] ?? $_GET['UID'] ?? $_GET['uid'] ?? '');
+        if ($uid !== '' && preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+            $publicPaths = [
+                '/auth', '/consent/send', '/consent/status',
+                '/support/ticket/create_guest', '/push/vapid',
+                '/config/themes', '/config/quiz_theme', '/config/tutorial',
+                '/config/reflection', '/config/habits', '/config/limits',
+                '/config/period',
+            ];
+            $isPublic = in_array($path, $publicPaths, true);
+
+            // GET-запросы (контент, лекции, задания) не блокируем
+            if ($method === 'GET') {
+                $isPublic = true;
+            }
+
+            if (!$isPublic && Storage::isBlocked($uid)) {
+                return [['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'], 403];
+            }
+        }
+
         // ─── Авторизация и синхронизация ───
         if ($path === '/auth'           && $method === 'POST') return [Auth::auth($body), 200];
         if ($path === '/reads'          && $method === 'POST') return [Reads::list($body), 200];
@@ -71,6 +94,9 @@ class Router
         // ─── Награды ───
         if ($path === '/rewards/balance' && $method === 'POST') return [Rewards::balance($body), 200];
         if ($path === '/rewards/history' && $method === 'POST') return [Rewards::history($body), 200];
+
+        // ─── История яблок (новая) ───
+        if ($path === '/apples/history'  && $method === 'POST') return [Apples::history($body), 200];
 
         // ─── Техподдержка ───
         if ($path === '/support/ticket/create'        && $method === 'POST') return [Support::create($body),      200];

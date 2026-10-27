@@ -84,11 +84,12 @@ class Auth
 
         $state['HABIT_SELECTED'] = $selectedHabit;
 
-        $state['CONSENT'] = [
+        $consentData = [
             'ANSWERED' => (bool)$consent['hasConsent'],
             'GRANTED'  => (bool)$consent['granted'],
             'AT'       => $consent['serverAt'],
         ];
+        $state['CONSENT'] = $consentData;
 
         $state['REWARDS'] = [
             'BALANCE' => RewardsBuilder::getBalance($uid),
@@ -97,7 +98,8 @@ class Auth
         return [
             'RESULT'  => 'OK',
             'ID_USER' => $uid,
-            'IS_TEST' => $isTest, // ← Флаг для клиента
+            'IS_TEST' => $isTest,
+            'CONSENT' => $consentData, // ← Дублируем в корень для удобства клиента
             'STATE'   => $state,
             'READS'   => Storage::getReads($uid),
             'TASKS'   => Storage::getTasks($uid),

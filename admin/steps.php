@@ -24,6 +24,20 @@ $order    = mb_strtoupper($oSort->getOrder());
 
 $lAdmin = new CAdminUiList($sTableID, $oSort);
 
+// ─── Плашка: pending-записи за прошлые локальные дни ───
+// Такие записи при отклонении теряют возможность retry:
+// checkAlreadySent в StepsBuilder::send смотрит только на текущую локальную дату.
+$stalePendingCount = 0;
+try {
+    $conn = \Bitrix\Main\Application::getConnection();
+    $row = $conn->query(
+        "SELECT COUNT(*) AS C FROM x5_pwa_steps
+         WHERE UF_STATUS = 'N'
+           AND UF_LOCAL_DATE < CURDATE()"
+    )->fetch();
+    $stalePendingCount = (int)($row['C'] ?? 0);
+} catch (\Throwable $e) {}
+
 // ─── Ручной пересчёт totals ───
 $recalcMessage = null;
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
@@ -378,6 +392,30 @@ $lAdmin->CheckListMode();
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php';
 ?>
+
+<?php if ($stalePendingCount > 0):
+    $yesterday = date('Y-m-d', strtotime('-1 day'));
+    $filterUrl = '?lang=' . LANGUAGE_ID
+        . '&apply_filter=Y&set_filter=Y'
+        . '&find_STATUS=N'
+        . '&find_LOCAL_DATE_to=' . urlencode($yesterday);
+?>
+    <div class="adm-info-message-wrap adm-info-message-yellow" style="margin-bottom:12px">
+        <div class="adm-info-message">
+            <b>Внимание:</b> <?= (int)$stalePendingCount ?>
+            <?= $stalePendingCount === 1 ? 'запись' : 'записей' ?>
+            на модерации за прошлые дни.
+            <br>
+            Если отклонить такую запись, пользователь <b>не сможет пересдать шаги</b>
+            (повторная отправка через API возможна только за текущую локальную дату).
+            Рекомендуем одобрять или отклонять записи в день отправки.
+            <br><br>
+            <a href="<?= htmlspecialcharsbx($filterUrl) ?>" style="font-weight:600">
+                Показать старые записи →
+            </a>
+        </div>
+    </div>
+<?php endif; ?>
 
 <?php if ($recalcMessage !== null): ?>
     <div class="adm-info-message-wrap adm-info-message-green">
