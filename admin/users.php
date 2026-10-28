@@ -6,6 +6,8 @@
  * Total-версии («* (всего)») включены через «Настроить» / скрытые колонки.
  * Эффективность/Собрано/Недостаёт — за период и за сегодня (в шапке).
  * Баланс — накопительный, за всё время.
+ *
+ * Согласие ПД: фильтр, колонка, предупреждение в шапке.
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -42,6 +44,18 @@ $filterFields = [
         'filterable'  => '?',
         'quickSearch' => '?',
         'default'     => true,
+    ],
+    [
+        'id'         => 'CONSENT',
+        'name'       => 'Согласие ПД',
+        'type'       => 'list',
+        'items'      => [
+            'Y'     => 'Дано',
+            'N'     => 'Отказ',
+            'NOT_Y' => 'Не дано (любое)',
+        ],
+        'filterable' => '',
+        'default'    => true,
     ],
     [
         'id'         => 'THEME',
@@ -121,11 +135,13 @@ function x5pwaFilterValue(array $arFilter, string $field): string
     return '';
 }
 
-$search     = x5pwaFilterValue($arFilter, 'SEARCH');
-$theme      = x5pwaFilterValue($arFilter, 'THEME');
-$blocked    = x5pwaFilterValue($arFilter, 'BLOCKED');
-$activeFrom = x5pwaFilterValue($arFilter, 'LAST_SEEN_AT_from');
-$activeTo   = x5pwaFilterValue($arFilter, 'LAST_SEEN_AT_to');
+$search      = x5pwaFilterValue($arFilter, 'SEARCH');
+$theme       = x5pwaFilterValue($arFilter, 'THEME');
+$blocked     = x5pwaFilterValue($arFilter, 'BLOCKED');
+$consent     = x5pwaFilterValue($arFilter, 'CONSENT');
+if (!in_array($consent, ['Y', 'N', 'NOT_Y'], true)) $consent = '';
+$activeFrom  = x5pwaFilterValue($arFilter, 'LAST_SEEN_AT_from');
+$activeTo    = x5pwaFilterValue($arFilter, 'LAST_SEEN_AT_to');
 $withPushRaw = x5pwaFilterValue($arFilter, 'HAS_SUBSCRIPTION');
 $withPush = in_array($withPushRaw, ['Y', 'N'], true) ? $withPushRaw : '';
 
@@ -155,6 +171,7 @@ if ($arIDs = $lAdmin->GroupAction()) {
         if ($lAdmin->IsGroupActionToAll()) {
             $all = \X5\Pwa\StatsBuilder::listUsers([
                 'search'      => $search,
+                'consent'     => $consent,
                 'theme'       => $theme,
                 'blocked'     => $blocked,
                 'active_from' => $activeFrom,
@@ -211,6 +228,7 @@ $page = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
 
 $params = [
     'search'      => $search,
+    'consent'     => $consent,
     'theme'       => $theme,
     'blocked'     => $blocked,
     'active_from' => $activeFrom,
@@ -231,12 +249,19 @@ $todayLabel = date('Y-m-d');
 // Агрегат по фильтру (без пагинации)
 $agg = \X5\Pwa\StatsBuilder::getUsersAggregate([
     'search'      => $search,
+    'consent'     => $consent,
     'theme'       => $theme,
     'blocked'     => $blocked,
     'active_from' => $activeFrom,
     'active_to'   => $activeTo,
     'withPush'    => $withPush,
 ]);
+
+// Сводка по согласиям (для предупреждения)
+$consentStats = \X5\Pwa\StatsBuilder::getConsentStats();
+$dirtyBalance = (int)$consentStats['dirty_balance'];
+$dirtyUsers   = (int)$consentStats['dirty_users'];
+$dirtyWithBal = (int)$consentStats['dirty_with_balance'];
 
 $dbRes = new CDBResult();
 $dbRes->InitFromArray(array_values($data['rows']));
@@ -254,16 +279,17 @@ $lAdmin->SetNavigationParams($rsData, ['nPageSize' => $perPage]);
 // Колонки
 // ─────────────────────────────────────────────────────────
 $arHeader = [
-    ['id' => 'STATUS',           'content' => 'Статус',        'default' => true],
-    ['id' => 'FIO',              'content' => 'Ф.И.О',         'sort' => 'FIO',            'default' => true],
-    ['id' => 'NICKNAME',         'content' => 'Никнейм',       'sort' => 'NICKNAME',       'default' => true],
-    ['id' => 'WORKPLACE',        'content' => 'Место работы',  'sort' => 'WORKPLACE',      'default' => true],
-    ['id' => 'THEME',            'content' => 'Направление',   'sort' => 'THEME',          'default' => true],
-    ['id' => 'LAST_SEEN_AT',     'content' => 'Активность',    'sort' => 'LAST_SEEN_AT',   'default' => true],
-    ['id' => 'HAS_SUBSCRIPTION', 'content' => 'Push',                                       'default' => true],
-    ['id' => 'EFFICIENCY_ALL',   'content' => 'Эффективность', 'sort' => 'EFFICIENCY_ALL', 'default' => true],
-    ['id' => 'EARNED_ALL',       'content' => 'Собрано',       'sort' => 'EARNED_ALL',     'default' => true],
-    ['id' => 'MISSING_ALL',      'content' => 'Недостаёт',     'sort' => 'MISSING_ALL',    'default' => true],
+    ['id' => 'STATUS',           'content' => 'Статус',          'default' => true],
+    ['id' => 'CONSENT',          'content' => 'Согласие ПД',     'default' => true],
+    ['id' => 'FIO',              'content' => 'Ф.И.О',           'sort' => 'FIO',            'default' => true],
+    ['id' => 'NICKNAME',         'content' => 'Никнейм',         'sort' => 'NICKNAME',       'default' => true],
+    ['id' => 'WORKPLACE',        'content' => 'Место работы',    'sort' => 'WORKPLACE',      'default' => true],
+    ['id' => 'THEME',            'content' => 'Направление',     'sort' => 'THEME',          'default' => true],
+    ['id' => 'LAST_SEEN_AT',     'content' => 'Активность',      'sort' => 'LAST_SEEN_AT',   'default' => true],
+    ['id' => 'HAS_SUBSCRIPTION', 'content' => 'Push',                                         'default' => true],
+    ['id' => 'EFFICIENCY_ALL',   'content' => 'Эффективность',   'sort' => 'EFFICIENCY_ALL', 'default' => true],
+    ['id' => 'EARNED_ALL',       'content' => 'Собрано',         'sort' => 'EARNED_ALL',     'default' => true],
+    ['id' => 'MISSING_ALL',      'content' => 'Недостаёт',       'sort' => 'MISSING_ALL',    'default' => true],
     ['id' => 'LECTURES_READ',    'content' => 'Лекций (период)',    'default' => true],
     ['id' => 'TASKS_DONE',       'content' => 'Заданий (период)',   'default' => true],
     ['id' => 'HABITS_DONE',      'content' => 'Привычек (период)',  'default' => true],
@@ -319,6 +345,7 @@ foreach ($data['rows'] as $u) {
     $arRes = [
         'UID'              => $uid,
         'STATUS'           => $blocked ? 'Y' : 'N',
+        'CONSENT'          => (string)($u['CONSENT'] ?? ''),
         'FIO'              => (string)$u['FIO'],
         'NICKNAME'         => (string)$u['NICKNAME'],
         'WORKPLACE'        => (string)$u['WORKPLACE'],
@@ -354,6 +381,26 @@ foreach ($data['rows'] as $u) {
                   : '')
               . '>Заблокирован</span>'
             : '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#e6f5d8;color:#3a7d1c;font-size:11px">Активен</span>');
+
+    $consentVal = (string)($u['CONSENT'] ?? '');
+    $consentAt  = (int)($u['CONSENT_AT'] ?? 0);
+    $consentTitle = $consentAt > 0
+        ? 'Согласие: ' . date('d.m.Y H:i', (int)($consentAt / 1000))
+        : ($consentVal === 'N' ? 'Пользователь нажал «Не согласен»' : 'Экран согласия не открывался или не завершён');
+
+    if ($consentVal === 'Y') {
+        $row->AddViewField('CONSENT',
+            '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#e6f5d8;color:#3a7d1c;font-size:11px" title="'
+            . htmlspecialcharsbx($consentTitle) . '">Дано</span>');
+    } elseif ($consentVal === 'N') {
+        $row->AddViewField('CONSENT',
+            '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#f5e0e0;color:#a52020;font-size:11px" title="'
+            . htmlspecialcharsbx($consentTitle) . '">Отказ</span>');
+    } else {
+        $row->AddViewField('CONSENT',
+            '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#f0f0f0;color:#666;font-size:11px" title="'
+            . htmlspecialcharsbx($consentTitle) . '">Не дано</span>');
+    }
 
     $row->AddViewField('FIO',
         $arRes['FIO'] !== '' ? htmlspecialcharsbx($arRes['FIO']) : '<span style="color:#aaa">—</span>');
@@ -463,6 +510,7 @@ $lAdmin->CheckListMode();
 
 $exportUrl = 'x5_pwa_users_export.php?lang=' . LANGUAGE_ID . '&' . http_build_query(array_filter([
     'SEARCH'            => $search,
+    'CONSENT'           => $consent,
     'THEME'             => $theme,
     'BLOCKED'           => $blocked,
     'LAST_SEEN_AT_from' => $activeFrom,
@@ -484,11 +532,29 @@ $lAdmin->SetContextMenu([
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php';
 ?>
 
+<?php if ($dirtyBalance > 0 || $dirtyWithBal > 0): ?>
+    <div class="adm-info-message-wrap adm-info-message-red">
+        <div class="adm-info-message">
+            <b>Найдены пользователи без согласия на обработку ПД с сохранёнными данными.</b><br>
+            Всего: <b><?= number_format($dirtyUsers, 0, '', ' ') ?></b> польз.
+            (из них <b><?= number_format($dirtyWithBal, 0, '', ' ') ?></b> с ненулевым балансом).
+            Сумма баланса без согласия: <b><?= number_format($dirtyBalance, 0, '', ' ') ?></b> яблок.
+            <br><br>
+            Такие пользователи <b>не участвуют</b> в агрегатах статистики и командной эффективности
+            (фильтр в <code>getActiveUidsForStats()</code>).<br>
+            Проверить по фильтру «Согласие ПД → Не дано (любое)».<br>
+            Управление: либо очистить их данные через <code>tools/purge_refused_consent.php</code>,
+            либо оставить как есть (данные скрыты в приложении, начисления не производятся).
+        </div>
+    </div>
+<?php endif; ?>
+
 <div style="background:#fff;padding:14px 18px;border:1px solid #e2e5e9;margin-bottom:14px">
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
         <div>
             <div style="font-size:11px;color:#666;text-transform:uppercase">Всего пользователей</div>
             <div style="font-size:22px;font-weight:600;color:#2c3e50"><?= (int)$agg['total'] ?></div>
+            <div style="font-size:10px;color:#888;margin-top:2px">только с согласием ПД</div>
         </div>
         <div>
             <div style="font-size:11px;color:#666;text-transform:uppercase">Собрано за период</div>
@@ -539,7 +605,8 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
         Колонки «Лекций / Заданий / Привычек (период)» — за период.
         Total-версии («* (всего)») включаются через «Настроить».
         «Баланс» — накопительный, за всё время.
-        В агрегате участвуют только пользователи с выбранной темой и согласием на ПД.
+        В агрегате участвуют только пользователи с выбранной темой и согласием на ПД
+        (пользователи без согласия не искажают статистику).
     </div>
 </div>
 

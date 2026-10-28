@@ -10,6 +10,9 @@ class Reflection
      * POST /reflection/send
      * Body: { ID_USER, TEXT, LOCAL_DATETIME }
      * Ответ: { RESULT: 'OK', SERVER_DATETIME } | { RESULT: 'ALREADY_SENT_TODAY', ... }
+     *
+     * PD consent проверяется здесь — отправка рефлексии пишет
+     * свободный текст пользователя в x5_pwa_reflections (обработка ПД).
      */
     public static function send(array $b): array
     {
@@ -23,8 +26,21 @@ class Reflection
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'TEXT required'];
         }
 
-        if (Storage::isBlocked($uid)) {
+        // ─── PD GATE (152-ФЗ) ───
+        // Проверяем ДО ReflectionBuilder::send(), чтобы текст не сохранился
+        // в БД у пользователей без согласия.
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+        }
+        if (($binding['UF_BLOCKED'] ?? 'N') === 'Y') {
             return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+        if (($binding['UF_CONSENT_GRANTED'] ?? '') !== 'Y') {
+            return [
+                'RESULT'  => 'CONSENT_REQUIRED',
+                'MESSAGE' => 'Необходимо согласие на обработку персональных данных.',
+            ];
         }
 
         // Обновляем таймзону, если клиент прислал LOCAL_DATETIME / TZ_OFFSET_MIN

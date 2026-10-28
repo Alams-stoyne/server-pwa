@@ -11,7 +11,11 @@ class ApplesBuilder
     private const LOOKBACK_DAYS = 30;
 
     /**
-     * @return array{items: array, total: int, page: int, perPage: int, pages: int}
+     * @return array{
+     *   items: array,
+     *   daily_efficiency: array,
+     *   total: int, page: int, perPage: int, pages: int
+     * }
      */
     public static function getHistory(string $uid, int $page = 1, int $perPage = 50): array
     {
@@ -99,7 +103,6 @@ class ApplesBuilder
                 }
             }
 
-            // Определяем iblock_key и тип — по информации из ИБ
             $info = self::resolveLectureMeta($elementId);
             if ($info === null) continue;
 
@@ -210,17 +213,115 @@ class ApplesBuilder
             return strcmp($db, $da);
         });
 
+        // ─── 6.1. DAILY_EFFICIENCY (не зависит от пагинации) ───
+        $dailyEfficiency = self::buildDailyEfficiency($uid, $items);
+
         $total  = count($items);
         $pages  = $total > 0 ? (int)ceil($total / $perPage) : 1;
         $sliced = array_slice($items, $offset, $perPage);
 
         return [
-            'items'   => $sliced,
-            'total'   => $total,
-            'page'    => $page,
-            'perPage' => $perPage,
-            'pages'   => $pages,
+            'items'            => $sliced,
+            'daily_efficiency' => $dailyEfficiency,
+            'total'            => $total,
+            'page'             => $page,
+            'perPage'          => $perPage,
+            'pages'            => $pages,
         ];
+    }
+
+    /**
+     * Собирает DAILY_EFFICIENCY для экрана «Эффективность по дням».
+     *
+     * Диапазон: [PLANNED_START .. min(PLANNED_END, today)].
+     * При PERIOD_CONFIGURED === false (пустые настройки) → [].
+     *
+     * EARNED и ITEMS_COUNT — из $items (полного массива до пагинации),
+     *   чтобы точно совпадать с блоком ITEMS.
+     * MAX — из кэша X5PwaDailyApples через StatsBuilder::calculateDailyMaxForUserBatch
+     *   (1-2 SQL на весь диапазон вместо N).
+     * PERCENT:
+     *   • null  — MAX = 0 (нет активностей в этот день);
+     *   • 0.0   — MAX > 0, EARNED = 0 (были активности, но не выполнены);
+     *   • round — иначе.
+     *
+     * Сортировка: desc (свежие сверху).
+     *
+     * TODO: при марафонах длиннее LOOKBACK_DAYS (=30) EARNED/ITEMS_COUNT
+     *       могут оказаться обрезаны из-за лимитов в getHistory().
+     *       Если марафон станет длиннее — вынести в отдельный SQL:
+     *       SELECT UF_LOCAL_DATE, SUM(UF_POINTS) AS E, COUNT(*) AS C
+     *       FROM x5_pwa_reward_log WHERE UF_UID = ? GROUP BY UF_LOCAL_DATE.
+     */
+    private static function buildDailyEfficiency(string $uid, array $items): array
+    {
+        $plannedStart = Settings::statsPeriodStart();
+        $plannedEnd   = Settings::statsPeriodEnd();
+
+        // PERIOD_CONFIGURED === false
+        if ($plannedStart === '' || $plannedEnd === '') {
+            return [];
+        }
+
+        $today = date('Y-m-d');
+        $to    = min($plannedEnd, $today);
+
+        // Марафон ещё не начался (PLANNED_START в будущем)
+        if ($to < $plannedStart) {
+            return [];
+        }
+
+        // Список дат [PLANNED_START .. to]
+        $dates  = [];
+        $cursor = strtotime($plannedStart);
+        $endTs  = strtotime($to);
+        if ($cursor === false || $endTs === false) return [];
+        while ($cursor <= $endTs) {
+            $dates[] = date('Y-m-d', $cursor);
+            $cursor  = strtotime('+1 day', $cursor);
+        }
+        if (!$dates) return [];
+
+        // Группируем ITEMS по дате: EARNED = сумма POINTS, COUNT = число записей
+        $agg = [];
+        foreach ($items as $it) {
+            $d = (string)($it['DATE'] ?? '');
+            if ($d === '') continue;
+            if (!isset($agg[$d])) $agg[$d] = ['earned' => 0, 'count' => 0];
+            $agg[$d]['earned'] += (int)($it['POINTS'] ?? 0);
+            $agg[$d]['count']++;
+        }
+
+        // MAX за весь диапазон — batch, без N SQL
+        $maxByDate = StatsBuilder::calculateDailyMaxForUserBatch($uid, $dates);
+
+        $out = [];
+        foreach ($dates as $d) {
+            $earned = (int)($agg[$d]['earned'] ?? 0);
+            $count  = (int)($agg[$d]['count']  ?? 0);
+            $max    = (int)($maxByDate[$d] ?? 0);
+
+            if ($max <= 0) {
+                $percent = null;
+            } elseif ($earned <= 0) {
+                $percent = 0.0;
+            } else {
+                $percent = round($earned / $max * 100, 2);
+            }
+
+            $out[] = [
+                'DATE'        => $d,
+                'EARNED'      => $earned,
+                'MAX'         => $max,
+                'PERCENT'     => $percent,
+                'ITEMS_COUNT' => $count,
+            ];
+        }
+
+        // Свежие сверху
+        usort($out, fn($a, $b) => strcmp($b['DATE'], $a['DATE']));
+
+        return $out;
     }
 
     /**

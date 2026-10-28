@@ -23,6 +23,25 @@ class Reads
         $id  = (string)($b['ID_LECTURE'] ?? '');
         if (!$uid || !$id) return ['RESULT' => 'ERROR'];
 
+        // ─── PD GATE (152-ФЗ) ───
+        // Чтение лекции пишет в x5_pwa_lecture_reads — это обработка ПД
+        // (профиль пользователя + его действия). Без явного согласия
+        // (UF_CONSENT_GRANTED = 'Y') запись не создаётся, награда не
+        // начисляется (P0 guard в RewardsBuilder::award() — вторая линия).
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+        }
+        if (($binding['UF_BLOCKED'] ?? 'N') === 'Y') {
+            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+        if (($binding['UF_CONSENT_GRANTED'] ?? '') !== 'Y') {
+            return [
+                'RESULT'  => 'CONSENT_REQUIRED',
+                'MESSAGE' => 'Необходимо согласие на обработку персональных данных.',
+            ];
+        }
+
         // TZ из тела — чтобы убрать рассинхрон при смене TZ в середине сессии
         $tz = Storage::parseTzOffsetFromArray($b);
         if ($tz !== null) {

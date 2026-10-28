@@ -59,6 +59,10 @@ class Outbox
         } catch (\Throwable $e) { Settings::logError("Outbox select habits failed: " . $e->getMessage(), 'Outbox::processHabits'); return 0; }
         if (!$rows) return 0;
 
+        // ─── PD GATE: batch-проверка consent ───
+        // 1 SQL на весь batch вместо N вызовов Storage::getConsent().
+        $consentedUids = self::filterConsentedUids(array_column($rows, 'UF_UID'));
+
         $habitsCache = [];
         try { foreach (HabitsBuilder::getAll() as $h) $habitsCache[(string)$h['id']] = $h; } catch (\Throwable $e) { Settings::logError("Outbox habits cache failed: " . $e->getMessage(), 'Outbox::processHabits'); return 0; }
 
@@ -75,6 +79,15 @@ class Outbox
         foreach ($groups as $g) {
             $uid = $g['uid']; $habitId = $g['habitId']; $localDate = $g['localDate']; $rowIds = $g['ids'];
             $state = self::STATE_FAILED; $reason = '';
+
+            // ─── PD GATE: без consent → skip, не failed ───
+            if (!isset($consentedUids[$uid])) {
+                $state = self::STATE_SKIPPED; $reason = 'NO_CONSENT';
+                foreach ($rowIds as $rid) self::markState(self::TABLE_HABITS, $rid, 'UF_REWARD_STATE', $state);
+                $processed += count($rowIds);
+                Settings::log("Outbox skipped habit (no PD consent) uid=" . substr($uid, 0, 12) . "… habit={$habitId} date={$localDate}", 'Outbox::processHabits');
+                continue;
+            }
 
             try {
                 $cfg = $habitsCache[$habitId] ?? null;
@@ -97,8 +110,13 @@ class Outbox
                         if (!empty($res['added']) || !empty($res['already'])) { $state = self::STATE_AWARDED; $reason = 'OK'; }
                         else {
                             $rr = (string)($res['reason'] ?? '');
-                            if (in_array($rr, ['NO_POINTS', 'NOT_DONE_YET'], true)) { $state = self::STATE_SKIPPED; $reason = $rr; }
-                            else { $reason = $rr !== '' ? $rr : 'UNKNOWN'; }
+                            // CONSENT_REQUIRED / BLOCKED — это ожидаемое поведение, не failed.
+                            // Сработать может из-за race между pre-check и award.
+                            if (in_array($rr, ['NO_POINTS', 'NOT_DONE_YET', 'CONSENT_REQUIRED', 'BLOCKED'], true)) {
+                                $state = self::STATE_SKIPPED; $reason = $rr;
+                            } else {
+                                $reason = $rr !== '' ? $rr : 'UNKNOWN';
+                            }
                         }
                     }
                 }
@@ -120,11 +138,20 @@ class Outbox
         } catch (\Throwable $e) { Settings::logError("Outbox select reflections failed: " . $e->getMessage(), 'Outbox::processReflections'); return 0; }
         if (!$rows) return 0;
 
+        $consentedUids = self::filterConsentedUids(array_column($rows, 'UF_UID'));
+
         $processed = 0;
         foreach ($rows as $r) {
             $id = (int)$r['ID']; $uid = (string)$r['UF_UID']; $ld = trim((string)($r['UF_LOCAL_DATE'] ?? ''));
             if ($ld === '') $ld = self::localDateFromCompletedAt($r['UF_SENT_AT'], $uid);
             $state = self::STATE_FAILED; $reason = '';
+
+            if (!isset($consentedUids[$uid])) {
+                self::markState(self::TABLE_REFLECTIONS, $id, 'UF_REWARD_STATE', self::STATE_SKIPPED);
+                $processed++;
+                Settings::log("Outbox skipped reflection (no PD consent) id={$id} uid=" . substr($uid, 0, 12) . "…", 'Outbox::processReflections');
+                continue;
+            }
 
             try {
                 if ($ld === '') { $reason = 'BAD_DATE'; }
@@ -133,8 +160,11 @@ class Outbox
                     if (!empty($res['added']) || !empty($res['already'])) { $state = self::STATE_AWARDED; $reason = 'OK'; }
                     else {
                         $rr = (string)($res['reason'] ?? '');
-                        if ($rr === 'NO_POINTS') { $state = self::STATE_SKIPPED; $reason = $rr; }
-                        else { $reason = $rr !== '' ? $rr : 'UNKNOWN'; }
+                        if (in_array($rr, ['NO_POINTS', 'CONSENT_REQUIRED', 'BLOCKED'], true)) {
+                            $state = self::STATE_SKIPPED; $reason = $rr;
+                        } else {
+                            $reason = $rr !== '' ? $rr : 'UNKNOWN';
+                        }
                     }
                 }
             } catch (\Throwable $e) { $reason = 'EXC:' . substr($e->getMessage(), 0, 120); }
@@ -159,6 +189,8 @@ class Outbox
         } catch (\Throwable $e) { Settings::logError("Outbox select events failed: " . $e->getMessage(), 'Outbox::processEvents'); return 0; }
         if (!$rows) return 0;
 
+        $consentedUids = self::filterConsentedUids(array_column($rows, 'UF_UID'));
+
         $processed = 0;
         foreach ($rows as $r) {
             $id = (int)$r['ID']; $uid = (string)$r['UF_UID']; $eventId = (string)$r['UF_EVENT_ID'];
@@ -166,6 +198,13 @@ class Outbox
             $title = trim((string)($r['UF_REWARD_TEXT'] ?? '')); if ($title === '') $title = (string)($r['UF_EVENT_TITLE'] ?? 'Мероприятие');
             $localDate = self::localDateFromCompletedAt($r['UF_CONFIRMED_AT'], $uid);
             $state = self::STATE_FAILED; $reason = '';
+
+            if (!isset($consentedUids[$uid])) {
+                self::markState(self::TABLE_EVENTS, $id, 'UF_REWARD_STATE', self::STATE_SKIPPED);
+                $processed++;
+                Settings::log("Outbox skipped event (no PD consent) id={$id} uid=" . substr($uid, 0, 12) . "… event={$eventId}", 'Outbox::processEvents');
+                continue;
+            }
 
             try {
                 if ($eventId === '' || $localDate === '') { $state = self::STATE_SKIPPED; $reason = 'BAD_DATA'; }
@@ -175,8 +214,11 @@ class Outbox
                     if (!empty($res['added']) || !empty($res['already'])) { $state = self::STATE_AWARDED; $reason = 'OK'; }
                     else {
                         $rr = (string)($res['reason'] ?? '');
-                        if ($rr === 'NO_POINTS') { $state = self::STATE_SKIPPED; $reason = $rr; }
-                        else { $reason = $rr !== '' ? $rr : 'UNKNOWN'; }
+                        if (in_array($rr, ['NO_POINTS', 'CONSENT_REQUIRED', 'BLOCKED'], true)) {
+                            $state = self::STATE_SKIPPED; $reason = $rr;
+                        } else {
+                            $reason = $rr !== '' ? $rr : 'UNKNOWN';
+                        }
                     }
                 }
             } catch (\Throwable $e) { $reason = 'EXC:' . substr($e->getMessage(), 0, 120); }
@@ -243,10 +285,19 @@ class Outbox
         } catch (\Throwable $e) { Settings::logError("Outbox select {$table} failed: " . $e->getMessage(), 'Outbox::processTaskLike'); return 0; }
         if (!$rows) return 0;
 
+        $consentedUids = self::filterConsentedUids(array_column($rows, 'UF_UID'));
+
         $processed = 0;
         foreach ($rows as $r) {
             $id = (int)$r['ID']; $uid = (string)$r['UF_UID']; $rawKey = (string)$r['RAW_KEY']; $whenAt = $r['WHEN_AT'];
             $state = self::STATE_FAILED; $reason = '';
+
+            if (!isset($consentedUids[$uid])) {
+                self::markState($table, $id, 'UF_REWARD_STATE', self::STATE_SKIPPED);
+                $processed++;
+                Settings::log("Outbox skipped {$kind} (no PD consent) id={$id} uid=" . substr($uid, 0, 12) . "… key={$rawKey}", 'Outbox::processTaskLike');
+                continue;
+            }
 
             try {
                 $candidateKeys = $kind === 'task' ? ['tasks'] : ['general_lectures', 'charging', 'theme_lectures'];
@@ -272,8 +323,11 @@ class Outbox
                                 elseif (!empty($res['already'])) { $state = self::STATE_AWARDED; $reason = 'ALREADY'; }
                                 else {
                                     $resReason = (string)($res['reason'] ?? 'UNKNOWN');
-                                    if (in_array($resReason, ['DAILY_LIMIT_REACHED', 'NO_POINTS', 'ELEMENT_DATE_MISMATCH'], true)) { $state = self::STATE_SKIPPED; $reason = $resReason; }
-                                    else $reason = $resReason;
+                                    if (in_array($resReason, ['DAILY_LIMIT_REACHED', 'NO_POINTS', 'ELEMENT_DATE_MISMATCH', 'CONSENT_REQUIRED', 'BLOCKED'], true)) {
+                                        $state = self::STATE_SKIPPED; $reason = $resReason;
+                                    } else {
+                                        $reason = $resReason;
+                                    }
                                 }
                             }
                         }
@@ -294,6 +348,8 @@ class Outbox
         try { $rows = $conn->query("SELECT ID, UF_UID, UF_LOCAL_DATE FROM `" . self::TABLE_STEPS . "` WHERE UF_REWARD_STATE_SENT = '" . self::STATE_PENDING . "' ORDER BY ID ASC LIMIT " . (int)$limit)->fetchAll(); } catch (\Throwable $e) { Settings::logError("Outbox select steps sent failed: " . $e->getMessage(), 'Outbox::processStepsSent'); return 0; }
         if (!$rows) return 0;
 
+        $consentedUids = self::filterConsentedUids(array_column($rows, 'UF_UID'));
+
         $groups = [];
         foreach ($rows as $r) {
             $uid = (string)$r['UF_UID']; $ld = trim((string)$r['UF_LOCAL_DATE']);
@@ -304,10 +360,26 @@ class Outbox
         $processed = 0;
         foreach ($groups as $g) {
             $uid = $g['uid']; $ld = $g['ld']; $state = self::STATE_FAILED; $reason = '';
+
+            if (!isset($consentedUids[$uid])) {
+                $state = self::STATE_SKIPPED; $reason = 'NO_CONSENT';
+                foreach ($g['ids'] as $rid) self::markState(self::TABLE_STEPS, $rid, 'UF_REWARD_STATE_SENT', $state);
+                $processed += count($g['ids']);
+                Settings::log("Outbox skipped step sent (no PD consent) uid=" . substr($uid, 0, 12) . "… date={$ld}", 'Outbox::processStepsSent');
+                continue;
+            }
+
             try {
                 $res = RewardsBuilder::awardStepsSent($uid, $ld);
                 if (!empty($res['added']) || !empty($res['already'])) { $state = self::STATE_AWARDED; $reason = 'OK'; }
-                else { $rr = (string)($res['reason'] ?? ''); $state = ($rr === 'NO_POINTS') ? self::STATE_SKIPPED : self::STATE_FAILED; $reason = $rr; }
+                else {
+                    $rr = (string)($res['reason'] ?? '');
+                    if (in_array($rr, ['NO_POINTS', 'CONSENT_REQUIRED', 'BLOCKED'], true)) {
+                        $state = self::STATE_SKIPPED; $reason = $rr;
+                    } else {
+                        $reason = $rr;
+                    }
+                }
             } catch (\Throwable $e) { $reason = 'EXC:' . substr($e->getMessage(), 0, 120); }
             foreach ($g['ids'] as $rid) self::markState(self::TABLE_STEPS, $rid, 'UF_REWARD_STATE_SENT', $state);
             $processed += count($g['ids']);
@@ -323,6 +395,8 @@ class Outbox
         try { $rows = $conn->query("SELECT ID, UF_UID, UF_LOCAL_DATE FROM `" . self::TABLE_STEPS . "` WHERE UF_REWARD_STATE_APPROVED = '" . self::STATE_PENDING . "' AND UF_STATUS = 'Y' ORDER BY ID ASC LIMIT " . (int)$limit)->fetchAll(); } catch (\Throwable $e) { Settings::logError("Outbox select steps approved failed: " . $e->getMessage(), 'Outbox::processStepsApproved'); return 0; }
         if (!$rows) return 0;
 
+        $consentedUids = self::filterConsentedUids(array_column($rows, 'UF_UID'));
+
         $groups = [];
         foreach ($rows as $r) {
             $uid = (string)$r['UF_UID']; $ld = trim((string)$r['UF_LOCAL_DATE']);
@@ -333,10 +407,26 @@ class Outbox
         $processed = 0;
         foreach ($groups as $g) {
             $uid = $g['uid']; $ld = $g['ld']; $state = self::STATE_FAILED; $reason = '';
+
+            if (!isset($consentedUids[$uid])) {
+                $state = self::STATE_SKIPPED; $reason = 'NO_CONSENT';
+                foreach ($g['ids'] as $rid) self::markState(self::TABLE_STEPS, $rid, 'UF_REWARD_STATE_APPROVED', $state);
+                $processed += count($g['ids']);
+                Settings::log("Outbox skipped step approved (no PD consent) uid=" . substr($uid, 0, 12) . "… date={$ld}", 'Outbox::processStepsApproved');
+                continue;
+            }
+
             try {
                 $res = RewardsBuilder::awardStepsApproved($uid, $ld);
                 if (!empty($res['added']) || !empty($res['already'])) { $state = self::STATE_AWARDED; $reason = 'OK'; }
-                else { $rr = (string)($res['reason'] ?? ''); $state = ($rr === 'NO_POINTS') ? self::STATE_SKIPPED : self::STATE_FAILED; $reason = $rr; }
+                else {
+                    $rr = (string)($res['reason'] ?? '');
+                    if (in_array($rr, ['NO_POINTS', 'CONSENT_REQUIRED', 'BLOCKED'], true)) {
+                        $state = self::STATE_SKIPPED; $reason = $rr;
+                    } else {
+                        $reason = $rr;
+                    }
+                }
             } catch (\Throwable $e) { $reason = 'EXC:' . substr($e->getMessage(), 0, 120); }
             foreach ($g['ids'] as $rid) self::markState(self::TABLE_STEPS, $rid, 'UF_REWARD_STATE_APPROVED', $state);
             $processed += count($g['ids']);
@@ -371,6 +461,52 @@ class Outbox
         if ($ts <= 0) return '';
         $localMs = ($ts * 1000) + $tz * 60 * 1000;
         return gmdate('Y-m-d', (int)($localMs / 1000));
+    }
+
+    /**
+     * PD GATE (152-ФЗ) — batch-проверка consent.
+     *
+     * Возвращает set uid'ов с UF_CONSENT_GRANTED = 'Y'. Остальные (NULL, 'N',
+     * заблокированные) — в set не попадают, и Outbox их скипает в STATE_SKIPPED.
+     *
+     * 1 SQL на весь batch (не N вызовов Storage::getConsent()). Для 500 uid
+     * в batch — ~1-2 мс вместо 500 × 1-2 мс = 0.5-1 сек.
+     *
+     * @param array $uids массив uid (могут быть дубликаты)
+     * @return array<string, true> set uid => true
+     */
+    private static function filterConsentedUids(array $uids): array
+    {
+        $uids = array_values(array_unique(array_filter(
+            array_map('strval', $uids),
+            fn($u) => $u !== ''
+        )));
+        if (!$uids) return [];
+
+        $conn = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $safe = array_map([$sqlHelper, 'forSql'], $uids);
+        $inList = "'" . implode("','", $safe) . "'";
+
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID FROM x5_pwa_uid_bindings
+                 WHERE UF_UID IN ({$inList})
+                   AND UF_CONSENT_GRANTED = 'Y'
+                   AND (UF_BLOCKED IS NULL OR UF_BLOCKED = 'N')"
+            )->fetchAll();
+            $out = [];
+            foreach ($rows as $r) $out[(string)$r['UF_UID']] = true;
+            return $out;
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'filterConsentedUids failed: ' . $e->getMessage(),
+                'Outbox::filterConsentedUids'
+            );
+            // Fallback: если запрос упал — считаем, что consent нет у всех.
+            // Это безопаснее, чем начислить награду без согласия.
+            return [];
+        }
     }
 
     private static function acquireLock(): bool

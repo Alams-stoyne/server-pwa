@@ -80,8 +80,20 @@ class Habits
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid ID_USER'];
         }
 
-        if (Storage::isBlocked($uid)) {
+        // ─── PD GATE (152-ФЗ) ───
+        // Выбор привычки записывает UF_HABIT_ID в x5_pwa_uid_bindings — ПД.
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+        }
+        if (($binding['UF_BLOCKED'] ?? 'N') === 'Y') {
             return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+        if (($binding['UF_CONSENT_GRANTED'] ?? '') !== 'Y') {
+            return [
+                'RESULT'  => 'CONSENT_REQUIRED',
+                'MESSAGE' => 'Необходимо согласие на обработку персональных данных.',
+            ];
         }
 
         $exists = false;
@@ -123,6 +135,24 @@ class Habits
         $uid = (string)($b['ID_USER'] ?? '');
         $id  = (string)($b['HABIT_ID'] ?? '');
         if (!$uid || !$id) return ['RESULT' => 'ERROR'];
+
+        // ─── PD GATE (152-ФЗ) ───
+        // Отметка привычки пишет в x5_pwa_habit_logs — обработка ПД.
+        // Проверяется ДО любых записей в БД, чтобы даже в случае DAILY_LIMIT
+        // не осталось orphan-записей у пользователей без согласия.
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+        }
+        if (($binding['UF_BLOCKED'] ?? 'N') === 'Y') {
+            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+        if (($binding['UF_CONSENT_GRANTED'] ?? '') !== 'Y') {
+            return [
+                'RESULT'  => 'CONSENT_REQUIRED',
+                'MESSAGE' => 'Необходимо согласие на обработку персональных данных.',
+            ];
+        }
 
         // ─── Таймзона и локальная дата пользователя ───
         $tz = Storage::parseTzOffsetFromArray($b);
@@ -203,11 +233,6 @@ class Habits
         $doneToday = $completionsToday + 1;
 
         // ─── Награда (только при достижении нормы) ───
-        // ИЗМЕНЕНО: результат awardHabit используется для REWARD_POINTS в ответе.
-        // Поле отдаём ТОЛЬКО при added === true — чтобы повторный вызов
-        // (например, при гонке двух параллельных запросов) не показал клиенту
-        // «+N» второй раз. already === true означает, что награда уже была
-        // начислена ранее за этот (habitId, localDate) — баланс не меняем.
         $rewardPoints = 0;
 
         if ($doneToday >= $timesPerDay) {
@@ -235,7 +260,6 @@ class Habits
             'SERVER_DATETIME' => $t->format('Y-m-d\TH:i:s\Z'),
         ];
 
-        // Поле присутствует, только если награда реально начислена
         if ($rewardPoints > 0) {
             $response['REWARD_POINTS'] = $rewardPoints;
         }

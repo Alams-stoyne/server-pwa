@@ -13,6 +13,10 @@ class Steps
      *
      * Ответ (RESULT=OK):
      *   { RESULT, SERVER_DATETIME, REWARD_POINTS }
+     *
+     * PD consent проверяется здесь (UF_CONSENT_GRANTED = 'Y').
+     * Поле CONSENT в теле — отдельное согласие «фото мои, можно отправлять»;
+     * дополнительно проверяется в StepsBuilder::send().
      */
     public static function send(array $b): array
     {
@@ -21,8 +25,22 @@ class Steps
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required'];
         }
 
-        if (Storage::isBlocked($uid)) {
+        // ─── PD GATE (152-ФЗ) ───
+        // Отправка шагов пишет в x5_pwa_steps + сохраняет фото (файлы) —
+        // это обработка ПД. Проверяем ДО StepsBuilder::send(), чтобы не
+        // сохранять ни записи, ни файлы у пользователей без согласия.
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+        }
+        if (($binding['UF_BLOCKED'] ?? 'N') === 'Y') {
             return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+        if (($binding['UF_CONSENT_GRANTED'] ?? '') !== 'Y') {
+            return [
+                'RESULT'  => 'CONSENT_REQUIRED',
+                'MESSAGE' => 'Необходимо согласие на обработку персональных данных.',
+            ];
         }
 
         $tz = Storage::parseTzOffsetFromArray($b);
@@ -58,24 +76,7 @@ class Steps
      * POST /steps/summary
      * Body: { ID_USER, TZ_OFFSET_MIN?, LOCAL_DATETIME? }
      *
-     * Ответ:
-     *   {
-     *     RESULT,
-     *     TOTAL_STEPS, GOAL, RANK, TOTAL_USERS,
-     *     TODAY_STEPS, DAILY_AVG, TOP_PERCENT,
-     *     PROGRESS_PERCENT,
-     *     TODAY_STATUS, TODAY_REJECT_REASON, TODAY_SENT_STEPS,
-     *     CONFIRMED_DATES: [YYYY-MM-DD, ...],
-     *     CONFIRMED_DAYS_COUNT: int,
-     *     PERIOD: {
-     *        START, END,               ← эффективный период (END зажат к today)
-     *        PLANNED_START, PLANNED_END ← СТАБИЛЬНЫЕ границы (не зависят от today)
-     *        PERIOD_CONFIGURED,         ← bool: задан ли период в админке
-     *        TODAY,
-     *        FROM, TO,                  ← legacy-алиасы START/END
-     *        PLANNED_FROM, PLANNED_TO   ← legacy-алиасы PLANNED_START/END
-     *     }
-     *   }
+     * Ответ: { RESULT, ..., CONFIRMED_DATES, CONFIRMED_DAYS_COUNT, PERIOD }
      */
     public static function summary(array $b): array
     {
@@ -91,17 +92,10 @@ class Steps
 
         $summary = StepsBuilder::getSummary($uid);
 
-        // Эффективный период — для фильтрации confirmed-dates.
         [$periodFrom, $periodTo] = StatsBuilder::getEffectivePeriod();
 
         $confirmedDates = StepsBuilder::getConfirmedDates($uid, $periodFrom, $periodTo);
 
-        // PERIOD — единый контракт с config/period.json (см. Dumper).
-        // Канонические имена: START/END/PLANNED_START/PLANNED_END/PERIOD_CONFIGURED/TODAY.
-        // Legacy-алиасы FROM/TO/PLANNED_FROM/PLANNED_TO — для обратной совместимости:
-        //   • PLANNED_FROM/PLANNED_TO теперь СТАБИЛЬНЫ (при ненастроенном периоде — '2000-01-01'/'2099-12-31',
-        //     а не «clamped to today», как было раньше — именно из-за этого у клиента
-        //     после полуночи некорректно считался «осталось N дней»).
         $periodPayload = StatsBuilder::buildPeriodPayload();
 
         $summary['CONFIRMED_DATES']      = $confirmedDates;

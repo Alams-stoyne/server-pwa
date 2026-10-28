@@ -265,6 +265,45 @@ class StatsBuilder
         return max(0, $max);
     }
 
+    /**
+     * Batch-версия calculateDailyMaxForUser: возвращает [date => max] за набор дат.
+     *
+     * Ключевое отличие от N×calculateDailyMaxForUser:
+     *   • binding ($uid → theme/habit) читается 1 раз;
+     *   • кэш X5PwaDailyApples общий ($applesCache), поэтому после прогретого
+     *     кэша (recalcAllStats раз в час) новых SQL-запросов нет;
+     *   • для 8-дневного марафона — 1-2 SQL вместо 8-16.
+     *
+     * Используется в ApplesBuilder::buildDailyEfficiency() (экран «Эффективность по дням»).
+     */
+    public static function calculateDailyMaxForUserBatch(string $uid, array $dates): array
+    {
+        $out = [];
+        if (!$dates) return $out;
+
+        foreach ($dates as $d) $out[$d] = 0;
+
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) return $out;
+
+        $themeCode   = trim((string)($binding['UF_THEME'] ?? ''));
+        $habitPoints = self::resolveHabitPoints((string)($binding['UF_HABIT_ID'] ?? ''));
+
+        $cache = [];
+        foreach ($dates as $d) {
+            $apples = self::getDailyApples($d, $cache);
+
+            $max = (int)($apples['BASE'] ?? 0);
+            if ($themeCode !== '' && isset($apples['THEMES'][$themeCode])) {
+                $max += (int)$apples['THEMES'][$themeCode];
+            }
+            $max += $habitPoints;
+
+            $out[$d] = max(0, $max);
+        }
+        return $out;
+    }
+
     public static function getDailyApples(string $date, array &$cache = []): array
     {
         if (isset($cache[$date])) return $cache[$date];
@@ -830,6 +869,9 @@ class StatsBuilder
             $blockedAt = !empty($b['UF_BLOCKED_AT'])
                 ? $b['UF_BLOCKED_AT']->getTimestamp() * 1000 : 0;
 
+            $consentAt = !empty($b['UF_CONSENT_DATETIME'])
+                ? $b['UF_CONSENT_DATETIME']->getTimestamp() * 1000 : 0;
+
             $out[] = [
                 'UID'              => $uid,
                 'DEVICE_ID'        => (string)$b['UF_DEVICE_ID'],
@@ -837,6 +879,9 @@ class StatsBuilder
                 'NICKNAME'         => (string)($b['UF_NICKNAME']  ?? ''),
                 'WORKPLACE'        => (string)($b['UF_WORKPLACE'] ?? ''),
                 'THEME'            => (string)($b['UF_THEME']     ?? ''),
+                'CONSENT'          => (string)($b['UF_CONSENT_GRANTED'] ?? ''),   // 'Y' | 'N' | ''
+                'CONSENT_AT'       => $consentAt,
+                'CONSENT_LOCAL_DT' => (string)($b['UF_CONSENT_LOCAL_DT'] ?? ''),
                 'CREATED_AT'       => $b['UF_CREATED_AT']
                     ? $b['UF_CREATED_AT']->getTimestamp() * 1000 : 0,
                 'LAST_SEEN_AT'     => $lastSeen,
@@ -906,6 +951,21 @@ class StatsBuilder
         $where = ['1=1'];
 
         $where[] = "(UF_THEME IS NOT NULL AND UF_THEME != '')";
+
+        // Согласуем агрегат с фильтром по consent.
+        // - пусто / 'Y' — только давшие согласие (как buildGlobal);
+        // - 'N' — только отказавшиеся;
+        // - 'NOT_Y' — все без consent (N + NULL + '');
+        // - 'ALL' — без фильтра (для аудита).
+        $consent = (string)($params['consent'] ?? '');
+        if ($consent === '' || $consent === 'Y') {
+            $where[] = "UF_CONSENT_GRANTED = 'Y'";
+        } elseif ($consent === 'N') {
+            $where[] = "UF_CONSENT_GRANTED = 'N'";
+        } elseif ($consent === 'NOT_Y') {
+            $where[] = "(UF_CONSENT_GRANTED IS NULL OR UF_CONSENT_GRANTED != 'Y')";
+        }
+        // 'ALL' — ничего не добавляем (аудит)
 
         if (!empty($params['search'])) {
             $s = $sqlHelper->forSql('%' . $params['search'] . '%');
@@ -978,7 +1038,99 @@ class StatsBuilder
             return $empty;
         }
     }
+    /**
+     * Сводка по согласиям на ПД — для предупреждения в admin/users.php и admin/stats.php.
+     *
+     * Возвращает:
+     *   [
+     *     'granted'   => ['users' => N, 'balance' => N, 'users_with_balance' => N],
+     *     'refused'   => ['users' => N, 'balance' => N, 'users_with_balance' => N],
+     *     'not_asked' => ['users' => N, 'balance' => N, 'users_with_balance' => N],
+     *     'other'     => ['users' => N, 'balance' => N, 'users_with_balance' => N],
+     *     'total'     => ['users' => N, 'balance' => N, 'users_with_balance' => N],
+     *     'dirty_balance' => N,  // refused + not_asked + other — сумма баланса
+     *     'dirty_users'   => N,  // refused + not_asked + other — число пользователей
+     *     'dirty_with_balance' => N,
+     *   ]
+     *
+     * Использование в админке: показать предупреждение, если dirty_balance > 0
+     * или dirty_with_balance > 0.
+     */
+    public static function getConsentStats(): array
+    {
+        $conn      = Application::getConnection();
 
+        $sql = "SELECT
+                    SUM(CASE WHEN UF_CONSENT_GRANTED = 'Y' THEN 1 ELSE 0 END)                                     AS granted_users,
+                    SUM(CASE WHEN UF_CONSENT_GRANTED = 'N' THEN 1 ELSE 0 END)                                     AS refused_users,
+                    SUM(CASE WHEN UF_CONSENT_GRANTED = '' OR UF_CONSENT_GRANTED IS NULL THEN 1 ELSE 0 END)        AS not_asked_users,
+                    SUM(CASE WHEN UF_CONSENT_GRANTED NOT IN ('Y','N') AND UF_CONSENT_GRANTED != '' AND UF_CONSENT_GRANTED IS NOT NULL THEN 1 ELSE 0 END) AS other_users,
+
+                    COALESCE(SUM(CASE WHEN UF_CONSENT_GRANTED = 'Y' THEN UF_REWARD_BALANCE ELSE 0 END), 0)        AS granted_balance,
+                    COALESCE(SUM(CASE WHEN UF_CONSENT_GRANTED = 'N' THEN UF_REWARD_BALANCE ELSE 0 END), 0)        AS refused_balance,
+                    COALESCE(SUM(CASE WHEN UF_CONSENT_GRANTED = '' OR UF_CONSENT_GRANTED IS NULL THEN UF_REWARD_BALANCE ELSE 0 END), 0) AS not_asked_balance,
+                    COALESCE(SUM(CASE WHEN UF_CONSENT_GRANTED NOT IN ('Y','N') AND UF_CONSENT_GRANTED != '' AND UF_CONSENT_GRANTED IS NOT NULL THEN UF_REWARD_BALANCE ELSE 0 END), 0) AS other_balance,
+
+                    SUM(CASE WHEN UF_CONSENT_GRANTED = 'Y' AND UF_REWARD_BALANCE > 0 THEN 1 ELSE 0 END)           AS granted_with_balance,
+                    SUM(CASE WHEN UF_CONSENT_GRANTED = 'N' AND UF_REWARD_BALANCE > 0 THEN 1 ELSE 0 END)           AS refused_with_balance,
+                    SUM(CASE WHEN (UF_CONSENT_GRANTED = '' OR UF_CONSENT_GRANTED IS NULL) AND UF_REWARD_BALANCE > 0 THEN 1 ELSE 0 END) AS not_asked_with_balance,
+
+                    COUNT(*)                                                                                      AS total_users,
+                    COALESCE(SUM(UF_REWARD_BALANCE), 0)                                                           AS total_balance,
+                    SUM(CASE WHEN UF_REWARD_BALANCE > 0 THEN 1 ELSE 0 END)                                        AS total_with_balance
+                FROM x5_pwa_uid_bindings";
+
+        try {
+            $row = $conn->query($sql)->fetch();
+        } catch (\Throwable $e) {
+            Settings::logError('getConsentStats failed: ' . $e->getMessage(), 'StatsBuilder::getConsentStats');
+            return [
+                'granted'   => ['users' => 0, 'balance' => 0, 'users_with_balance' => 0],
+                'refused'   => ['users' => 0, 'balance' => 0, 'users_with_balance' => 0],
+                'not_asked' => ['users' => 0, 'balance' => 0, 'users_with_balance' => 0],
+                'other'     => ['users' => 0, 'balance' => 0, 'users_with_balance' => 0],
+                'total'     => ['users' => 0, 'balance' => 0, 'users_with_balance' => 0],
+                'dirty_balance' => 0, 'dirty_users' => 0, 'dirty_with_balance' => 0,
+            ];
+        }
+
+        $granted = [
+            'users'             => (int)($row['granted_users']   ?? 0),
+            'balance'           => (int)($row['granted_balance'] ?? 0),
+            'users_with_balance'=> (int)($row['granted_with_balance'] ?? 0),
+        ];
+        $refused = [
+            'users'             => (int)($row['refused_users']   ?? 0),
+            'balance'           => (int)($row['refused_balance'] ?? 0),
+            'users_with_balance'=> (int)($row['refused_with_balance'] ?? 0),
+        ];
+        $notAsked = [
+            'users'             => (int)($row['not_asked_users']   ?? 0),
+            'balance'           => (int)($row['not_asked_balance'] ?? 0),
+            'users_with_balance'=> (int)($row['not_asked_with_balance'] ?? 0),
+        ];
+        $other = [
+            'users'             => (int)($row['other_users']   ?? 0),
+            'balance'           => (int)($row['other_balance'] ?? 0),
+            'users_with_balance'=> 0,
+        ];
+        $total = [
+            'users'             => (int)($row['total_users']   ?? 0),
+            'balance'           => (int)($row['total_balance'] ?? 0),
+            'users_with_balance'=> (int)($row['total_with_balance'] ?? 0),
+        ];
+
+        return [
+            'granted'   => $granted,
+            'refused'   => $refused,
+            'not_asked' => $notAsked,
+            'other'     => $other,
+            'total'     => $total,
+            'dirty_balance'      => $refused['balance'] + $notAsked['balance'] + $other['balance'],
+            'dirty_users'        => $refused['users']   + $notAsked['users']   + $other['users'],
+            'dirty_with_balance' => $refused['users_with_balance'] + $notAsked['users_with_balance'],
+        ];
+    }
     // ───────── Старый buildUser ─────────
 
     public static function buildUser(string $uid): array

@@ -11,20 +11,7 @@ class Events
      *
      * Возвращает два блока:
      *   • STATUS — активность пользователя (обратная совместимость);
-     *   • STATES — статусы клика/подтверждения по каждому событию
-     *     (для восстановления после переустановки приложения).
-     *
-     * Ответ:
-     *   {
-     *     RESULT: "OK",
-     *     STATUS: {
-     *       HABITS: [], LAST_READ: ?, LAST_TASK: ?, LAST_HABIT: ?
-     *     },
-     *     STATES: {
-     *       "test-23": { CLICKED_AT: "...", CONFIRMED_AT: "..." },
-     *       "test-24": { CLICKED_AT: "...", CONFIRMED_AT: null }
-     *     }
-     *   }
+     *   • STATES — статусы клика/подтверждения по каждому событию.
      */
     public static function status(array $input): array
     {
@@ -98,25 +85,12 @@ class Events
     }
 
     /**
-     * Действие пользователя над событием.
+     * Действие пользователя над событием: click | confirm.
      *
-     * Принимает:
-     *   ACTION    — 'click' | 'confirm'
-     *   EVENT_ID  — код события (CODE элемента IB «События»)
-     *   ID_USER   — UID пользователя
-     *
-     * Проксирует в EventsBuilder::recordClick / recordConfirm —
-     * вся валидация (блокировка, rate-limit, таймер, NO_CLICK, EXPIRED,
-     * начисление наград) выполняется там.
-     *
-     * Ответ:
-     *   OK (click):
-     *     { RESULT, ID_USER, EVENT_ID, ACTION, CLICKED_AT, ALREADY,
-     *       CONFIRMED_AT?, REWARD_POINTS?, REWARD_TEXT? }  // * — только если уже подтверждено
-     *
-     *   OK (confirm):
-     *     { RESULT, ID_USER, EVENT_ID, ACTION,
-     *       CLICKED_AT, CONFIRMED_AT, REWARD_POINTS, REWARD_TEXT, ALREADY }
+     * PD consent проверяется здесь. EventsBuilder::recordClick/recordConfirm
+     * валидирует блокировку, rate-limit, таймер, начисление наград — но
+     * ПД-гейт должен стоять ДО них, чтобы клик/подтверждение не писали
+     * в x5_pwa_event_actions без явного согласия.
      */
     public static function action(array $input): array
     {
@@ -150,6 +124,22 @@ class Events
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'EVENT_ID required'];
         }
 
+        // ─── PD GATE (152-ФЗ) ───
+        // click/confirm пишут в x5_pwa_event_actions — обработка ПД.
+        $binding = Storage::getUidBinding($uid);
+        if (!$binding) {
+            return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
+        }
+        if (($binding['UF_BLOCKED'] ?? 'N') === 'Y') {
+            return ['RESULT' => 'BLOCKED', 'MESSAGE' => 'Доступ приостановлен.'];
+        }
+        if (($binding['UF_CONSENT_GRANTED'] ?? '') !== 'Y') {
+            return [
+                'RESULT'  => 'CONSENT_REQUIRED',
+                'MESSAGE' => 'Необходимо согласие на обработку персональных данных.',
+            ];
+        }
+
         // ─── ACTION = click ───
         if ($action === 'click') {
             $r = EventsBuilder::recordClick($uid, $eventId);
@@ -174,8 +164,6 @@ class Events
                 'ALREADY'    => !empty($r['already']),
             ];
 
-            // Если событие уже подтверждено — клиент должен это видеть,
-            // чтобы не показывать кнопку подтверждения повторно.
             if (!empty($r['confirmedAt'])) {
                 $out['CONFIRMED_AT']  = $r['confirmedAt'];
                 $out['REWARD_POINTS'] = (int)($r['rewardPoints'] ?? 0);

@@ -35,6 +35,22 @@ class RewardsBuilder
         self::TYPE_EVENT           => 'Мероприятие',
     ];
 
+    /**
+     * Единственная точка выдачи наград.
+     *
+     * Помимо валидации uid/type/limit/дедупа — обязательная проверка:
+     *   • UF_BLOCKED != 'Y'         — блокировка;
+     *   • UF_CONSENT_GRANTED = 'Y'  — согласие на обработку ПД (152-ФЗ).
+     *
+     * Оба условия проверяются ДО любых side-эффектов. Если не выполнены —
+     * награда НЕ начисляется, возвращается reason, никакой записи в
+     * x5_pwa_reward_log и x5_pwa_uid_bindings.UF_REWARD_BALANCE не создаётся.
+     *
+     * Причина: до этого consent проверялся только в Api\Auth (не в
+     * RewardsBuilder), а Api\Steps::send смотрел checkbox из тела запроса,
+     * а не UF_CONSENT_GRANTED. Итог — начисления пользователям без согласия.
+     * Этот guard закрывает дыру на уровне единственной точки входа.
+     */
     public static function award(
         string $uid,
         string $actionType,
@@ -56,6 +72,46 @@ class RewardsBuilder
         }
         if ($actionId === '' || $points <= 0) {
             return ['ok' => true, 'added' => false, 'already' => false, 'reason' => 'NO_POINTS', 'points' => 0, 'balance' => self::getBalance($uid)];
+        }
+
+        // ─── PD GATE (152-ФЗ) ───
+        // Согласие проверяется здесь, а не в эндпоинтах, чтобы никакая
+        // будущая точка вызова (tools/*, admin/*, новые Api\*) не могла
+        // обойти проверку.
+        $consent = Storage::getConsent($uid);
+        if (empty($consent['granted'])) {
+            Settings::logError(
+                sprintf(
+                    'PD_CONSENT_MISSING uid=%s type=%s id=%s points=%d hasConsent=%s',
+                    substr($uid, 0, 12) . '…', $actionType, $actionId, $points,
+                    !empty($consent['hasConsent']) ? 'N' : 'NULL'
+                ),
+                'RewardsBuilder::award'
+            );
+            return [
+                'ok'      => false,
+                'added'   => false,
+                'already' => false,
+                'reason'  => 'CONSENT_REQUIRED',
+                'points'  => 0,
+                'balance' => self::getBalance($uid),
+            ];
+        }
+
+        // ─── BLOCKED GATE ───
+        if (Storage::isBlocked($uid)) {
+            Settings::log(
+                'award skipped: BLOCKED uid=' . substr($uid, 0, 12) . '… type=' . $actionType,
+                'RewardsBuilder::award'
+            );
+            return [
+                'ok'      => false,
+                'added'   => false,
+                'already' => false,
+                'reason'  => 'BLOCKED',
+                'points'  => 0,
+                'balance' => self::getBalance($uid),
+            ];
         }
 
         $localDate = $localDate ?: self::userLocalDate($uid);

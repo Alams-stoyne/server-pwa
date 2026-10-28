@@ -434,6 +434,19 @@ class Storage
             $filter['!=UF_BLOCKED'] = 'Y';
         }
 
+        // PD consent filter (152-ФЗ).
+        // 'Y'     — только давшие согласие;
+        // 'N'     — только отказавшиеся;
+        // 'NOT_Y' — все остальные (N + NULL + '').
+        $consent = (string)($params['consent'] ?? '');
+        if ($consent === 'Y') {
+            $filter['=UF_CONSENT_GRANTED'] = 'Y';
+        } elseif ($consent === 'N') {
+            $filter['=UF_CONSENT_GRANTED'] = 'N';
+        } elseif ($consent === 'NOT_Y') {
+            $filter['!=UF_CONSENT_GRANTED'] = 'Y';
+        }
+
         if (!empty($params['active_from'])) {
             try {
                 $filter['>=UF_LAST_SEEN_AT'] = new DateTime((string)$params['active_from']);
@@ -1002,6 +1015,24 @@ class Storage
             Settings::logError(
                 'addRewardLog rejected: uid="' . substr($uid, 0, 12) . '" points=' . $points
                 . ' type="' . (string)($entry['actionType'] ?? '') . '"',
+                'Storage::addRewardLog'
+            );
+            return;
+        }
+
+        // ─── PD GATE (152-ФЗ) ───
+        // Страховка к RewardsBuilder::award(): любая запись в reward_log
+        // требует UF_CONSENT_GRANTED = 'Y'. Если кто-то обойдёт guard
+        // в RewardsBuilder (например, новый tools/* скрипт или прямой
+        // вызов Storage::addRewardLog) — начисление отсекается и
+        // логируется как инцидент.
+        $consent = self::getConsent($uid);
+        if (empty($consent['granted'])) {
+            Settings::logError(
+                'PD_CONSENT_MISSING (addRewardLog) uid=' . substr($uid, 0, 12) . '…'
+                . ' type="' . (string)($entry['actionType'] ?? '') . '"'
+                . ' id="' . (string)($entry['actionId'] ?? '') . '"'
+                . ' points=' . $points,
                 'Storage::addRewardLog'
             );
             return;

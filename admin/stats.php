@@ -297,7 +297,78 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
         Учитываются только пользователи с выбранной темой и согласием на ПД.
     </div>
 </div>
+<?php
+// Сводка по согласиям — для аудита
+$consentStats = StatsBuilder::getConsentStats();
+$dirtyBalance = (int)$consentStats['dirty_balance'];
+$dirtyUsers   = (int)$consentStats['dirty_users'];
+$dirtyWithBal = (int)$consentStats['dirty_with_balance'];
+?>
 
+<?php if ($dirtyBalance > 0 || $dirtyWithBal > 0): ?>
+<div class="x5pwa-box" style="border-left:4px solid #c0392b">
+    <h3 style="color:#c0392b">Пользователи без согласия ПД</h3>
+    <div class="x5pwa-subtitle">
+        Такие пользователи <b>не участвуют</b> в статистике ниже — фильтр в
+        <code>Storage::getActiveUidsForStats()</code> и <code>StatsBuilder::buildGlobal()</code>.
+        Командная эффективность <b>корректна</b>: их данные игнорируются.
+    </div>
+
+    <table class="x5pwa-table" style="max-width:640px">
+        <thead>
+            <tr>
+                <th>Состояние</th>
+                <th style="text-align:right">Пользователей</th>
+                <th style="text-align:right">С балансом &gt; 0</th>
+                <th style="text-align:right">Сумма баланса</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><b>Дано</b> (участвуют в статистике)</td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['granted']['users']) ?></td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['granted']['users_with_balance']) ?></td>
+                <td class="x5pwa-num-green"><?= $fmt($consentStats['granted']['balance']) ?></td>
+            </tr>
+            <tr style="background:#fff5f5">
+                <td><b>Отказ</b> (UF_CONSENT_GRANTED = 'N')</td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['refused']['users']) ?></td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['refused']['users_with_balance']) ?></td>
+                <td class="x5pwa-num-red"><?= $fmt($consentStats['refused']['balance']) ?></td>
+            </tr>
+            <tr style="background:#f5f5f5">
+                <td><b>Не спрашивали</b> (пусто)</td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['not_asked']['users']) ?></td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['not_asked']['users_with_balance']) ?></td>
+                <td class="x5pwa-num-red"><?= $fmt($consentStats['not_asked']['balance']) ?></td>
+            </tr>
+            <?php if ((int)$consentStats['other']['users'] > 0): ?>
+            <tr>
+                <td><b>Другое</b> (некорректное значение)</td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['other']['users']) ?></td>
+                <td class="x5pwa-num">—</td>
+                <td class="x5pwa-num-red"><?= $fmt($consentStats['other']['balance']) ?></td>
+            </tr>
+            <?php endif ?>
+        </tbody>
+        <tfoot>
+            <tr style="background:#f0f2f5;font-weight:600">
+                <td>Итого</td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['total']['users']) ?></td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['total']['users_with_balance']) ?></td>
+                <td class="x5pwa-num"><?= $fmt($consentStats['total']['balance']) ?></td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <div style="font-size:11px;color:#888;margin-top:12px">
+        Проверка по компаниям: <code>stats/global.json</code> считает только пользователей с
+        <code>UF_CONSENT_GRANTED = 'Y'</code>. Если компания отсутствует в таблице ниже — значит,
+        у всех её пользователей нет согласия, либо у них пустая <code>UF_THEME</code>.
+        Для проверки конкретных пользователей: <b>PWA → Пользователи</b>, фильтр «Согласие ПД → Не дано».
+    </div>
+</div>
+<?php endif ?>
 <!-- Балансы -->
 <div class="x5pwa-box">
     <h3>Баланс яблок</h3>
