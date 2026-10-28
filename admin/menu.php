@@ -53,6 +53,11 @@ return [
                 'icon' => 'statistic_menu_icon',
             ],
             [
+                'text' => 'Аналитика воронки', // <── ДОБАВЛЕНО
+                'url'  => 'x5_pwa_analytics.php?lang=' . LANGUAGE_ID,
+                'icon' => 'statistic_menu_icon',
+            ],
+            [
                 'text' => 'Общая статистика',
                 'url'  => 'x5_pwa_stats.php?lang=' . LANGUAGE_ID,
                 'icon' => 'statistic_menu_icon',

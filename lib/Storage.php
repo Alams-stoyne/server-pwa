@@ -1310,4 +1310,62 @@ class Storage
             return (int)($row['T'] ?? 0);
         } catch (\Throwable $e) { return 0; }
     }
+    
+    // ───────── Analytics ─────────
+
+    public static function addAnalyticsEvent(array $entry): void
+    {
+        try {
+            $dc = self::dataClass('X5PwaAnalyticsEvents');
+            $dc::add([
+                'UF_EVENT_NAME'     => (string)($entry['eventName'] ?? ''),
+                'UF_DEVICE_ID'      => (string)($entry['deviceId'] ?? ''),
+                'UF_UID'            => (string)($entry['uid'] ?? ''),
+                'UF_SESSION_ID'     => (string)($entry['sessionId'] ?? ''),
+                'UF_TS'             => (int)($entry['ts'] ?? 0),
+                'UF_SERVER_AT'      => $entry['serverAt'] ?? self::now(),
+                'UF_PROPS'          => (string)($entry['props'] ?? ''),
+                'UF_APP_VERSION'    => (string)($entry['appVersion'] ?? ''),
+                'UF_TZ_OFFSET_MIN'  => (int)($entry['tzOffsetMin'] ?? 0),
+                'UF_LOCAL_DATETIME' => (string)($entry['localDatetime'] ?? ''),
+            ]);
+        } catch (\Throwable $e) {
+            Settings::logError('addAnalyticsEvent failed: ' . $e->getMessage(), 'Storage::addAnalyticsEvent');
+        }
+    }
+
+    /**
+     * Получить UID, привязанный к устройству (для проверки согласия по DEVICE_ID).
+     */
+    public static function getUidByDeviceId(string $deviceId): ?string
+    {
+        if ($deviceId === '') return null;
+        try {
+            $dc  = self::dataClass('X5PwaUidBindings');
+            $row = $dc::getList([
+                'select' => ['UF_UID'],
+                'filter' => ['=UF_DEVICE_ID' => $deviceId],
+                'limit'  => 1,
+            ])->fetch();
+            return $row ? (string)$row['UF_UID'] : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    public static function cleanupAnalytics(int $days = 90): int
+    {
+        $conn = Application::getConnection();
+        $cutoff = date('Y-m-d H:i:s', time() - $days * 86400);
+        $safe = $conn->getSqlHelper()->forSql($cutoff);
+        
+        try {
+            $conn->queryExecute("DELETE FROM x5_pwa_analytics_events WHERE UF_SERVER_AT < '{$safe}'");
+            return (int)$conn->getAffectedRowsCount();
+        } catch (\Throwable $e) {
+            Settings::logError('cleanupAnalytics failed: ' . $e->getMessage(), 'Storage::cleanupAnalytics');
+            return 0;
+        }
+    }
+
 }

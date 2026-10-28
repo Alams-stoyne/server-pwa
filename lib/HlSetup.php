@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 18;
+        return 19;
     }
 
     public static function config(): array
@@ -248,6 +248,22 @@ class HlSetup
                     'UF_CREATED_AT'  => ['datetime', []],
                 ],
             ],
+            'AnalyticsEvents' => [
+                'name'  => 'X5PwaAnalyticsEvents',
+                'table' => 'x5_pwa_analytics_events',
+                'fields' => [
+                    'UF_EVENT_NAME'    => ['string', ['SIZE' => 64]],
+                    'UF_DEVICE_ID'     => ['string', ['SIZE' => 64]],
+                    'UF_UID'           => ['string', ['SIZE' => 40]],
+                    'UF_SESSION_ID'    => ['string', ['SIZE' => 64]],
+                    'UF_TS'            => ['integer', []],
+                    'UF_SERVER_AT'     => ['datetime', []],
+                    'UF_PROPS'         => ['string', ['SIZE' => 2000, 'ROWS' => 4]],
+                    'UF_APP_VERSION'   => ['string', ['SIZE' => 32]],
+                    'UF_TZ_OFFSET_MIN' => ['integer', []],
+                    'UF_LOCAL_DATETIME'=> ['string', ['SIZE' => 32]],
+                ],
+            ],
             'DailyApples' => [
                 'name'  => 'X5PwaDailyApples',
                 'table' => 'x5_pwa_daily_apples',
@@ -447,6 +463,12 @@ class HlSetup
                 'idx_x5pwa_reward_uid_t'   => 'UF_UID, UF_ACTION_TYPE',
                 'idx_x5pwa_reward_uid_d'   => 'UF_UID, UF_LOCAL_DATE',
                 'idx_x5pwa_reward_date'    => 'UF_LOCAL_DATE',
+            ],
+            'x5_pwa_analytics_events' => [
+                'idx_x5pwa_analytics_name' => 'UF_EVENT_NAME',
+                'idx_x5pwa_analytics_uid'  => 'UF_UID',
+                'idx_x5pwa_analytics_dev'  => 'UF_DEVICE_ID',
+                'idx_x5pwa_analytics_time' => 'UF_SERVER_AT',
             ],
             'x5_pwa_daily_apples' => [
                 'uniq_x5pwa_dailyapples_dt' => 'unique:UF_DATE, UF_THEME_CODE',

@@ -25,6 +25,7 @@ class AdminSetup
             'x5_pwa_rewards.php'              => ['path' => 'admin/rewards.php',               'wrapper' => 'plain'],
             'x5_pwa_rewards_export.php'       => ['path' => 'admin/rewards_export.php',        'wrapper' => 'plain'],
             'x5_pwa_outbox.php'               => ['path' => 'admin/outbox.php',                'wrapper' => 'plain'],
+            'x5_pwa_analytics.php'            => ['path' => 'admin/analytics.php',             'wrapper' => 'plain'], // <── ДОБАВЛЕНО
         ];
     }
 

@@ -58,7 +58,7 @@ class Router
                 '/support/ticket/create_guest', '/push/vapid',
                 '/config/themes', '/config/quiz_theme', '/config/tutorial',
                 '/config/reflection', '/config/habits', '/config/limits',
-                '/config/period',
+                '/config/period', '/analytics/event',
             ];
             $isPublic = in_array($path, $publicPaths, true);
 
@@ -119,6 +119,9 @@ class Router
         if ($path === '/stats/personal'    && $method === 'POST') return [Stats::personal($body), 200];
         if ($path === '/stats/sync'        && $method === 'POST') return [Stats::sync($body), 200];
         if ($path === '/stats/global.json' && $method === 'GET')  return [Stats::global(), 200];
+
+        // ─── Аналитика ───
+        if ($path === '/analytics/event'   && $method === 'POST') return [Analytics::event($body), 200];
 
         // ─── Конфигурация ───
         if ($path === '/config/themes'      && $method === 'GET') return [Config::themes(), 200];
@@ -182,8 +185,7 @@ class Router
                 'TIME'    => (new \Bitrix\Main\Type\DateTime())->toString(),
                 'PUSH'    => Push::available() ? 'available' : 'no_library',
             ], 200];
-        }
-
+        } 
         return [['RESULT' => 'NOT_FOUND', 'PATH' => $path], 404];
     }
 

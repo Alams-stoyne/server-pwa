@@ -29,6 +29,7 @@ class Scheduler
             self::maybeRegenerateDumps();
             self::maybeRegenerateStats();
             self::maybeRunOutbox();
+            self::maybeCleanupAnalytics(); // <── ДОБАВЛЕНО
         } catch (\Throwable $e) {
             Settings::logError($e->getMessage(), 'Scheduler::lazyRun');
         }
@@ -153,6 +154,26 @@ class Scheduler
                 'Scheduler outbox failed: ' . $e->getMessage(),
                 'Scheduler::maybeRunOutbox'
             );
+        }
+    }
+
+    /**
+     * Очистка старых событий аналитики (TTL 90 дней).
+     * Запускается не чаще 1 раза в сутки.
+     */
+    private static function maybeCleanupAnalytics(): void
+    {
+        $last = Settings::getInt('analytics_cleanup_last_at', 0);
+        if ($last > 0 && (time() - $last) < 86400) return;
+
+        try {
+            $deleted = Storage::cleanupAnalytics(90);
+            Settings::set('analytics_cleanup_last_at', (string)time());
+            if ($deleted > 0) {
+                Settings::log("Analytics cleanup: deleted {$deleted} events", 'Scheduler');
+            }
+        } catch (\Throwable $e) {
+            Settings::logError('Analytics cleanup failed: ' . $e->getMessage(), 'Scheduler');
         }
     }
 

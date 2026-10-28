@@ -39,6 +39,7 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\StatsBuilder'      => 'lib/StatsBuilder.php',
     'X5\\Pwa\\Outbox'            => 'lib/Outbox.php',
     'X5\\Pwa\\ApplesBuilder'     => 'lib/ApplesBuilder.php',
+    'X5\\Pwa\\AnalyticsBuilder'  => 'lib/AnalyticsBuilder.php',
 
     'X5\\Pwa\\Property\\QuizAnswer' => 'lib/Property/QuizAnswer.php',
 
@@ -63,6 +64,7 @@ Loader::registerAutoLoadClasses('x5.pwa', [
     'X5\\Pwa\\Api\\Events'     => 'lib/Api/Events.php',
     'X5\\Pwa\\Api\\Rewards'    => 'lib/Api/Rewards.php',
     'X5\\Pwa\\Api\\Apples'     => 'lib/Api/Apples.php',
+    'X5\\Pwa\\Api\\Analytics'  => 'lib/Api/Analytics.php',
 ]);
 
 if (ModuleManager::isModuleInstalled('x5.pwa')) {
