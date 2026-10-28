@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 19;
+        return 20;
     }
 
     public static function config(): array
@@ -256,7 +256,7 @@ class HlSetup
                     'UF_DEVICE_ID'     => ['string', ['SIZE' => 64]],
                     'UF_UID'           => ['string', ['SIZE' => 40]],
                     'UF_SESSION_ID'    => ['string', ['SIZE' => 64]],
-                    'UF_TS'            => ['integer', []],
+                    'UF_TS'            => ['string', ['SIZE' => 20]],
                     'UF_SERVER_AT'     => ['datetime', []],
                     'UF_PROPS'         => ['string', ['SIZE' => 2000, 'ROWS' => 4]],
                     'UF_APP_VERSION'   => ['string', ['SIZE' => 32]],

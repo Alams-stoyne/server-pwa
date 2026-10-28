@@ -255,8 +255,18 @@ $settingsUrl = 'settings.php?mid=' . urlencode($moduleId)
         </thead>
         <tbody>
             <tr>
-                <td>Участников</td>
+                <td>Участников <b>(активны сегодня)</b></td>
                 <td class="num"><b><?= $fmt($gp['TOTAL_USERS'] ?? 0) ?></b></td>
+                <td class="num total">—</td>
+            </tr>
+            <tr>
+                <td>Всего в марафоне (согласие + тема)</td>
+                <td class="num"><b><?= $fmt($gp['TOTAL_PARTICIPANTS'] ?? 0) ?></b></td>
+                <td class="num total">—</td>
+            </tr>
+            <tr>
+                <td>Всего зарегистрировано (устройств)</td>
+                <td class="num"><b><?= $fmt($gp['TOTAL_REGISTERED'] ?? 0) ?></b></td>
                 <td class="num total">—</td>
             </tr>
             <tr>
