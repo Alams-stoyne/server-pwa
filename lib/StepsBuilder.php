@@ -21,21 +21,23 @@ class StepsBuilder
     {
         $dc = Storage::dataClass('X5PwaSteps');
         $row = $dc::getList([
-            'select' => ['ID', 'UF_SENT_AT'],
+            'select' => ['ID', 'UF_SENT_AT', 'UF_STATUS', 'UF_IMAGES', 'UF_REJECT_REASON'],
             'filter' => [
-                '=UF_UID' => $uid, 
+                '=UF_UID' => $uid,
                 '=UF_LOCAL_DATE' => $localDate,
-                // Разрешаем повторную отправку, если предыдущая запись была отклонена
-                '!=UF_STATUS' => 'R'
             ],
+            'order'  => ['ID' => 'DESC'],
             'limit'  => 1,
         ])->fetch();
 
-        if (!$row) return ['exists' => false, 'id' => null, 'sentAt' => null];
+        if (!$row) return ['exists' => false, 'id' => null, 'sentAt' => null, 'status' => null, 'images' => '[]', 'rejectReason' => ''];
         return [
             'exists' => true,
             'id'     => (int)$row['ID'],
             'sentAt' => $row['UF_SENT_AT'] ? $row['UF_SENT_AT']->format('Y-m-d\TH:i:sP') : null,
+            'status' => (string)$row['UF_STATUS'],
+            'images' => (string)$row['UF_IMAGES'],
+            'rejectReason' => (string)$row['UF_REJECT_REASON']
         ];
     }
 
@@ -120,8 +122,47 @@ class StepsBuilder
         return $out;
     }
 
-    public static function send(string $uid, $stepsRaw, $imagesRaw, $consentRaw, string $localDate): array
+    public static function send(string $uid, $stepsRaw, $imagesRaw, $consentRaw, string $stepDate = ''): array
     {
+        $localDate = self::userLocalDate($uid);
+
+        // Fallback для старого клиента (на 2 недели, потом поменять на $localDate)
+        if ($stepDate === '') {
+            $stepDate = date('Y-m-d', strtotime('-1 day', strtotime($localDate)));
+        }
+
+        // 1. Валидация даты
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $stepDate)) {
+            return ['RESULT' => 'BAD_STEP_DATE', 'MESSAGE' => 'Дата должна быть в формате YYYY-MM-DD'];
+        }
+
+        // 2. Проверка периода и дедлайна
+        $periodFrom = Settings::stepsPeriodFrom();
+        $periodTo   = Settings::stepsPeriodTo();
+        $deadlineStr = Settings::stepsDeadline();
+        $deadlineTs = strtotime($deadlineStr . ' Europe/Moscow');
+
+        if ($stepDate < $periodFrom || $stepDate > $periodTo) {
+            return ['RESULT' => 'OUT_OF_PERIOD', 'MESSAGE' => 'Дата вне периода марафона'];
+        }
+        if ($stepDate > $localDate) {
+            return ['RESULT' => 'STEP_DATE_FUTURE', 'MESSAGE' => 'Нельзя отправить шаги за будущий день'];
+        }
+        if (time() > $deadlineTs) {
+            return ['RESULT' => 'DEADLINE_PASSED', 'MESSAGE' => 'Дедлайн сдачи шагов прошёл'];
+        }
+
+        // 3. Rate-limit для прошлых дней (не более 3 в сутки)
+        if ($stepDate < $localDate) {
+            $conn = Application::getConnection();
+            $safeUid = $conn->getSqlHelper()->forSql($uid);
+            $row = $conn->query("SELECT COUNT(*) AS C FROM x5_pwa_steps WHERE UF_UID = '{$safeUid}' AND UF_LOCAL_DATE < '{$localDate}' AND UF_SENT_AT > DATE_SUB(NOW(), INTERVAL 1 DAY)")->fetch();
+            if ((int)($row['C'] ?? 0) >= 3) {
+                return ['RESULT' => 'RATE_LIMITED', 'MESSAGE' => 'Не более 3 отправок за прошлые дни в сутки.'];
+            }
+        }
+
+        // 4. Согласие и шаги
         $consent = false;
         if ($consentRaw === true || $consentRaw === 1 || $consentRaw === '1' || $consentRaw === 'Y' || $consentRaw === 'y') {
             $consent = true;
@@ -134,10 +175,31 @@ class StepsBuilder
             return ['RESULT' => 'INVALID_STEPS', 'MESSAGE' => 'STEPS должен быть числом.'];
         }
         $steps = (int)$stepsRaw;
-        if ($steps < 0 || $steps > self::MAX_STEPS) {
-            return ['RESULT'  => 'INVALID_STEPS', 'MESSAGE' => 'STEPS должен быть от 0 до ' . number_format(self::MAX_STEPS, 0, '', ' ') . '.'];
+        if ($steps < 0) {
+            return ['RESULT' => 'STEPS_INVALID', 'MESSAGE' => 'Шаги не могут быть отрицательными.'];
+        }
+        if ($steps > self::MAX_STEPS) {
+            return ['RESULT' => 'STEPS_LIMIT_EXCEEDED', 'MESSAGE' => 'Максимум ' . number_format(self::MAX_STEPS, 0, '', ' ') . ' шагов.'];
         }
 
+        // 5. Проверка "уже отправлено"
+        $existing = self::checkAlreadySent($uid, $stepDate);
+        if ($existing['exists']) {
+            if (in_array($existing['status'], ['N', 'Y'], true)) {
+                return [
+                    'RESULT' => 'ALREADY_SENT',
+                    'MESSAGE' => 'За этот день уже отправлены шаги.',
+                    'STATUS' => $existing['status'] === 'N' ? 'pending' : 'approved'
+                ];
+            }
+            // Если статус R — переотправка разрешена. Удаляем старые фото.
+            $oldImages = json_decode($existing['images'], true) ?: [];
+            foreach ($oldImages as $fid) {
+                \CFile::Delete((int)$fid);
+            }
+        }
+
+        // 6. Обработка фото
         if (!is_array($imagesRaw) || count($imagesRaw) === 0) {
             return ['RESULT' => 'INVALID_IMAGES', 'MESSAGE' => 'Нужно приложить хотя бы одно фото.'];
         }
@@ -157,11 +219,6 @@ class StepsBuilder
             $decoded[] = $d;
         }
 
-        $already = self::checkAlreadySent($uid, $localDate);
-        if ($already['exists']) {
-            return ['RESULT' => 'ALREADY_SENT_TODAY', 'MESSAGE' => 'Сегодня вы уже отправляли шаги.', 'LAST_SENT_AT' => $already['sentAt']];
-        }
-
         $fileIds = [];
         foreach ($decoded as $idx => $d) {
             $fileId = self::saveImage($uid, $d, $idx);
@@ -172,33 +229,160 @@ class StepsBuilder
             $fileIds[] = $fileId;
         }
 
+        // 7. Сохранение в БД
         $dc = Storage::dataClass('X5PwaSteps');
-        $res = $dc::add([
-            'UF_UID'           => $uid,
-            'UF_STEPS'         => $steps,
-            'UF_LOCAL_DATE'    => $localDate,
-            'UF_SENT_AT'       => new \Bitrix\Main\Type\DateTime(),
-            'UF_IMAGES'        => json_encode($fileIds, JSON_UNESCAPED_UNICODE),
-            'UF_CONSENT'       => 'Y',
-            'UF_STATUS'        => 'N',
-            'UF_REJECT_REASON' => '',
-        ]);
+        $now = new \Bitrix\Main\Type\DateTime();
+        $fileIdsJson = json_encode($fileIds, JSON_UNESCAPED_UNICODE);
+
+        if ($existing['exists'] && $existing['status'] === 'R') {
+            $res = $dc::update($existing['id'], [
+                'UF_STEPS'         => $steps,
+                'UF_SENT_AT'       => $now,
+                'UF_IMAGES'        => $fileIdsJson,
+                'UF_CONSENT'       => 'Y',
+                'UF_STATUS'        => 'N',
+                'UF_REJECT_REASON' => '',
+                'UF_MODERATED_AT'  => null,
+                'UF_MODERATED_BY'  => 0,
+                'UF_REWARD_STATE_SENT' => 'pending',
+                'UF_REWARD_STATE_APPROVED' => 'pending',
+            ]);
+        } else {
+            $res = $dc::add([
+                'UF_UID'           => $uid,
+                'UF_STEPS'         => $steps,
+                'UF_LOCAL_DATE'    => $stepDate,
+                'UF_SENT_AT'       => $now,
+                'UF_IMAGES'        => $fileIdsJson,
+                'UF_CONSENT'       => 'Y',
+                'UF_STATUS'        => 'N',
+                'UF_REJECT_REASON' => '',
+                'UF_REWARD_STATE_SENT' => 'pending',
+                'UF_REWARD_STATE_APPROVED' => 'pending',
+            ]);
+        }
 
         if (!$res->isSuccess()) {
             foreach ($fileIds as $fid) { \CFile::Delete($fid); }
-            \Bitrix\Main\Diag\Debug::writeToFile('DB add failed: ' . implode('; ', $res->getErrorMessages()), 'StepsBuilder::send', '/x5.pwa.log');
+            \Bitrix\Main\Diag\Debug::writeToFile('DB add/update failed: ' . implode('; ', $res->getErrorMessages()), 'StepsBuilder::send', '/x5.pwa.log');
             return ['RESULT' => 'SAVE_ERROR', 'MESSAGE' => 'Не удалось сохранить запись.'];
         }
 
+        // 8. Награда за отправку (если настроена)
         $rewardPoints = 0;
         try {
-            $rewardResult = RewardsBuilder::awardStepsSent($uid, $localDate);
+            $rewardResult = RewardsBuilder::awardStepsSent($uid, $stepDate);
             if (!empty($rewardResult['added'])) { $rewardPoints = (int)$rewardResult['points']; }
         } catch (\Throwable $e) {
             \Bitrix\Main\Diag\Debug::writeToFile('award steps sent failed uid=' . substr($uid, 0, 12) . '…: ' . $e->getMessage(), 'StepsBuilder::send', '/x5.pwa.log');
         }
 
-        return ['RESULT' => 'OK', 'SERVER_DATETIME' => gmdate('Y-m-d\TH:i:s\Z'), 'REWARD_POINTS' => $rewardPoints];
+        $todayStatus = self::getTodayStatus($uid, $localDate);
+
+        return [
+            'RESULT'           => 'OK',
+            'STEP_DATE'        => $stepDate,
+            'STATUS'           => 'pending',
+            'REWARD_POINTS'    => $rewardPoints,
+            'TODAY_STATUS'     => $todayStatus['TODAY_STATUS'],
+            'TODAY_SENT_STEPS' => $todayStatus['TODAY_SENT_STEPS'],
+        ];
+    }
+
+    public static function getHistory(string $uid): array
+    {
+        $from = Settings::stepsPeriodFrom();
+        $to   = Settings::stepsPeriodTo();
+        $deadline = Settings::stepsDeadline();
+        $deadlineTs = strtotime($deadline . ' Europe/Moscow');
+        $localDate = self::userLocalDate($uid);
+        $now = time();
+
+        $dc = Storage::dataClass('X5PwaSteps');
+        $rows = $dc::getList([
+            'filter' => [
+                '=UF_UID' => $uid,
+                '>=UF_LOCAL_DATE' => $from,
+                '<=UF_LOCAL_DATE' => $to
+            ],
+            'order' => ['UF_SENT_AT' => 'DESC']
+        ])->fetchAll();
+
+        $byDate = [];
+        foreach ($rows as $r) {
+            $d = (string)$r['UF_LOCAL_DATE'];
+            if (!isset($byDate[$d])) {
+                $byDate[$d] = $r;
+            }
+        }
+
+        $days = [];
+        $cursor = strtotime($from);
+        $end = strtotime($to);
+
+        while ($cursor <= $end) {
+            $d = date('Y-m-d', $cursor);
+            $r = $byDate[$d] ?? null;
+
+            $status = 'not_sent';
+            $steps = null;
+            $rejectReason = null;
+            $sentAt = null;
+            $confirmedAt = null;
+            $rewardPoints = null;
+
+            if ($d > $localDate) {
+                $status = 'future';
+            } else {
+                if ($r) {
+                    $st = (string)$r['UF_STATUS'];
+                    if ($st === 'N') $status = 'pending';
+                    elseif ($st === 'Y') $status = 'approved';
+                    elseif ($st === 'R') $status = 'rejected';
+
+                    $steps = (int)$r['UF_STEPS'];
+                    $rejectReason = $status === 'rejected' ? (string)$r['UF_REJECT_REASON'] : null;
+                    $sentAt = $r['UF_SENT_AT'] ? $r['UF_SENT_AT']->format('Y-m-d\TH:i:sP') : null;
+                    $confirmedAt = $r['UF_MODERATED_AT'] ? $r['UF_MODERATED_AT']->format('Y-m-d\TH:i:sP') : null;
+                    
+                    if ($status === 'approved') {
+                        $rewardPoints = Settings::rewardStepsApprovedPoints();
+                    }
+                }
+
+                if ($now > $deadlineTs) {
+                    if ($status === 'not_sent' || $status === 'rejected') {
+                        $status = 'expired';
+                    }
+                }
+            }
+
+            $days[] = [
+                'DATE' => $d,
+                'STEPS' => $steps,
+                'STATUS' => $status,
+                'REJECT_REASON' => $rejectReason,
+                'SENT_AT' => $sentAt,
+                'CONFIRMED_AT' => $confirmedAt,
+                'REWARD_POINTS' => $rewardPoints
+            ];
+
+            $cursor = strtotime('+1 day', $cursor);
+        }
+
+        $dt = new \DateTime($deadline, new \DateTimeZone('Europe/Moscow'));
+        $deadlineIso = $dt->format('Y-m-d\TH:i:sP');
+
+        return [
+            'RESULT' => 'OK',
+            'PERIOD' => [
+                'FROM' => $from,
+                'TO' => $to,
+                'DEADLINE' => $deadlineIso,
+                'MAX_STEPS_PER_DAY' => self::MAX_STEPS
+            ],
+            'DAYS' => $days
+        ];
     }
 
     public static function recalcUserTotal(string $uid): int
@@ -333,24 +517,13 @@ class StepsBuilder
             'TODAY_STEPS' => $todaySteps,
             'DAILY_AVG' => $dailyAvg,
             'TOP_PERCENT' => $topPercent,
-            'PROGRESS_PERCENT' => $progressPercent,            
-            // ← НОВЫЕ ПОЛЯ
+            'PROGRESS_PERCENT' => $progressPercent,
             'TODAY_STATUS' => $todayStatus,
             'TODAY_REJECT_REASON' => $todayRejectReason,
             'TODAY_SENT_STEPS' => $todaySentSteps,
         ];
     }
     
-    /**
-     * Возвращает статус отправки шагов за сегодня (по локальной дате пользователя).
-     *
-     * @return array{
-     *   TODAY_STATUS: string,
-     *   TODAY_REJECT_REASON: string,
-     *   TODAY_SENT_STEPS: int,
-     *   TODAY_STEPS: int
-     * }
-     */
     public static function getTodayStatus(string $uid, ?string $localDate = null): array
     {
         $localDate = $localDate ?: self::userLocalDate($uid);
@@ -359,7 +532,6 @@ class StepsBuilder
         $safeUid   = $sqlHelper->forSql($uid);
         $safeDate  = $sqlHelper->forSql($localDate);
 
-        // Сумма одобренных шагов за сегодня (то, что пойдёт в TOTAL_STEPS)
         $todayRow = $conn->query(
             "SELECT COALESCE(SUM(UF_STEPS), 0) AS T
              FROM x5_pwa_steps
@@ -369,7 +541,6 @@ class StepsBuilder
         )->fetch();
         $todaySteps = (int)($todayRow['T'] ?? 0);
 
-        // Все записи за сегодня (чтобы определить актуальный статус)
         $records = $conn->query(
             "SELECT UF_STEPS, UF_STATUS, UF_REJECT_REASON
              FROM x5_pwa_steps
@@ -390,7 +561,6 @@ class StepsBuilder
             if ($hasApproved) {
                 $status = 'approved';
             } else {
-                // Берём самую свежую запись (DESC → первая)
                 $latest    = $records[0];
                 $sentSteps = (int)($latest['UF_STEPS'] ?? 0);
                 $st        = (string)($latest['UF_STATUS'] ?? '');

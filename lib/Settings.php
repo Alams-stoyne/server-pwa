@@ -31,26 +31,15 @@ class Settings
     public static function cdnBase(): string
     {
         $raw = trim(self::get('cdn_base', ''));
-
-        if ($raw === '') {
-            return self::CDN_DEFAULT;
-        }
-
+        if ($raw === '') return self::CDN_DEFAULT;
         $host = parse_url($raw, PHP_URL_HOST);
         if (is_string($host) && $host !== '') {
-            $isS3 = (bool)preg_match(
-                '#(^s3[.\-]|\.s3[.\-]|storage\.|\.beget\.cloud$|\.amazonaws\.com$|^minio[.\-]|minio\.)#i',
-                $host
-            );
+            $isS3 = (bool)preg_match('#(^s3[.\-]|\.s3[.\-]|storage\.|\.beget\.cloud$|\.amazonaws\.com$|^minio[.\-]|minio\.)#i', $host);
             if ($isS3) {
-                self::logError(
-                    'cdn_base looks like S3 endpoint: "' . $raw . '" — falling back to ' . self::CDN_DEFAULT,
-                    'Settings::cdnBase'
-                );
+                self::logError('cdn_base looks like S3 endpoint: "' . $raw . '" — falling back to ' . self::CDN_DEFAULT, 'Settings::cdnBase');
                 return self::CDN_DEFAULT;
             }
         }
-
         return rtrim($raw, '/');
     }
 
@@ -67,28 +56,13 @@ class Settings
     public static function generateVapidKeys(): array
     {
         if (class_exists(\Minishlink\WebPush\VAPID::class)) {
-            try {
-                return \Minishlink\WebPush\VAPID::createVapidKeys();
-            } catch (\Throwable $e) {
-                // fallback на OpenSSL
-            }
+            try { return \Minishlink\WebPush\VAPID::createVapidKeys(); } catch (\Throwable $e) {}
         }
-
-        $res = openssl_pkey_new([
-            'private_key_type' => OPENSSL_KEYTYPE_EC,
-            'curve_name'       => 'prime256v1',
-        ]);
-        if (!$res) {
-            throw new \RuntimeException('openssl_pkey_new failed: ' . openssl_error_string());
-        }
-
+        $res = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_EC, 'curve_name' => 'prime256v1']);
+        if (!$res) throw new \RuntimeException('openssl_pkey_new failed: ' . openssl_error_string());
         $details = openssl_pkey_get_details($res);
-        if (!isset($details['ec']['x'], $details['ec']['y'], $details['ec']['d'])) {
-            throw new \RuntimeException('openssl_pkey_get_details: no EC info');
-        }
-
+        if (!isset($details['ec']['x'], $details['ec']['y'], $details['ec']['d'])) throw new \RuntimeException('openssl_pkey_get_details: no EC info');
         $publicRaw = "\x04" . $details['ec']['x'] . $details['ec']['y'];
-
         return [
             'publicKey'  => self::base64urlEncode($publicRaw),
             'privateKey' => self::base64urlEncode($details['ec']['d']),
@@ -120,10 +94,7 @@ class Settings
     {
         $raw   = self::get('allowed_origins');
         $lines = preg_split('/\r\n|\r|\n/', $raw) ?: [];
-        return array_values(array_filter(
-            array_map('trim', $lines),
-            fn($s) => $s !== ''
-        ));
+        return array_values(array_filter(array_map('trim', $lines), fn($s) => $s !== ''));
     }
 
     // ── IBlock IDs ──
@@ -168,7 +139,7 @@ class Settings
         return self::getInt('last_dump_at', 0);
     }
 
-    // ── Период статистики ──
+    // ── Период статистики (общий) ──
     public static function statsPeriodStart(): string
     {
         $raw = trim(self::get('stats_period_start', ''));
@@ -189,10 +160,32 @@ class Settings
     {
         $start = self::statsPeriodStart();
         $end   = self::statsPeriodEnd();
-
         if ($start !== '' && $date < $start) return false;
         if ($end   !== '' && $date > $end)   return false;
         return true;
+    }
+
+    // ── Период и дедлайн шагомера ──
+    public static function stepsPeriodFrom(): string
+    {
+        $raw = trim(self::get('steps_period_from', '2026-10-26'));
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) return '2026-10-26';
+        return $raw;
+    }
+
+    public static function stepsPeriodTo(): string
+    {
+        $raw = trim(self::get('steps_period_to', '2026-11-01'));
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) return '2026-11-01';
+        return $raw;
+    }
+
+    public static function stepsDeadline(): string
+    {
+        // Возвращает строку "YYYY-MM-DD HH:MM:SS" (интерпретируется как MSK)
+        $raw = trim(self::get('steps_deadline', '2026-11-02 12:00:00'));
+        if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $raw)) return '2026-11-02 12:00:00';
+        return $raw;
     }
 
     // ── Интервал пересчёта кешей ──
@@ -274,54 +267,20 @@ class Settings
         \Bitrix\Main\Diag\Debug::writeToFile($message, $label, $file);
     }
 
-    // ── Флаг пересборки limits_rules.json ──
-    public static function limitsRulesDirty(): bool
-    {
-        return self::getBool('limits_rules_dirty', false);
-    }
+    // ── Флаги пересборки ──
+    public static function limitsRulesDirty(): bool { return self::getBool('limits_rules_dirty', false); }
+    public static function markLimitsRulesDirty(): void { self::set('limits_rules_dirty', '1'); }
+    public static function clearLimitsRulesDirty(): void { self::set('limits_rules_dirty', '0'); }
 
-    public static function markLimitsRulesDirty(): void
-    {
-        self::set('limits_rules_dirty', '1');
-    }
+    public static function dumpsDirty(): bool { return self::getBool('dumps_dirty', false); }
+    public static function markDumpsDirty(): void { self::set('dumps_dirty', 'Y'); }
+    public static function clearDumpsDirty(): void { self::set('dumps_dirty', 'N'); }
 
-    public static function clearLimitsRulesDirty(): void
-    {
-        self::set('limits_rules_dirty', '0');
-    }
-
-    // ── Флаг пересборки дампов вне очереди (общий) ──
-    public static function dumpsDirty(): bool
-    {
-        return self::getBool('dumps_dirty', false);
-    }
-
-    public static function markDumpsDirty(): void
-    {
-        self::set('dumps_dirty', 'Y');
-    }
-
-    public static function clearDumpsDirty(): void
-    {
-        self::set('dumps_dirty', 'N');
-    }
-
-    // ── Флаг отложенной пересборки (ставится Dumper'ом при throttle) ──
-    public static function regenDirty(): bool
-    {
-        return self::get('regen_dirty', '0') === '1';
-    }
-
-    public static function clearRegenDirty(): void
-    {
-        self::set('regen_dirty', '0');
-    }
+    public static function regenDirty(): bool { return self::get('regen_dirty', '0') === '1'; }
+    public static function clearRegenDirty(): void { self::set('regen_dirty', '0'); }
 
     // ── Outbox наград ──
-    public static function outboxEnabled(): bool
-    {
-        return self::getBool('outbox_enabled', true);
-    }
+    public static function outboxEnabled(): bool { return self::getBool('outbox_enabled', true); }
 
     public static function outboxIntervalSec(): int
     {
@@ -344,7 +303,7 @@ class Settings
     {
         $v = self::getInt('support_reset_eta_minutes', 60);
         if ($v < 5)   $v = 5;
-        if ($v > 1440) $v = 1440; // не больше суток
+        if ($v > 1440) $v = 1440;
         return $v;
     }
 }

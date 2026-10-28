@@ -7,17 +7,6 @@ use X5\Pwa\Storage;
 
 class Steps
 {
-    /**
-     * POST /steps/send
-     * Body: { ID_USER, STEPS, IMAGES:[base64], CONSENT, LOCAL_DATETIME }
-     *
-     * Ответ (RESULT=OK):
-     *   { RESULT, SERVER_DATETIME, REWARD_POINTS }
-     *
-     * PD consent проверяется здесь (UF_CONSENT_GRANTED = 'Y').
-     * Поле CONSENT в теле — отдельное согласие «фото мои, можно отправлять»;
-     * дополнительно проверяется в StepsBuilder::send().
-     */
     public static function send(array $b): array
     {
         $uid = trim((string)($b['ID_USER'] ?? ''));
@@ -25,10 +14,6 @@ class Steps
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required'];
         }
 
-        // ─── PD GATE (152-ФЗ) ───
-        // Отправка шагов пишет в x5_pwa_steps + сохраняет фото (файлы) —
-        // это обработка ПД. Проверяем ДО StepsBuilder::send(), чтобы не
-        // сохранять ни записи, ни файлы у пользователей без согласия.
         $binding = Storage::getUidBinding($uid);
         if (!$binding) {
             return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь не найден.'];
@@ -48,36 +33,23 @@ class Steps
             Storage::saveUserTzOffsetMin($uid, $tz);
         }
 
-        $localDate = StepsBuilder::userLocalDate($uid);
+        $stepDate = trim((string)($b['STEP_DATE'] ?? ''));
 
         $result = StepsBuilder::send(
             $uid,
             $b['STEPS']   ?? null,
             $b['IMAGES']  ?? null,
             $b['CONSENT'] ?? null,
-            $localDate
+            $stepDate
         );
 
         if (($result['RESULT'] ?? '') === 'OK') {
             Storage::touchBindingByUid($uid);
         }
 
-        // Прикрепляем актуальный статус «за сегодня», чтобы клиенту
-        // не нужно было делать повторный /steps/summary после send().
-        $resCode = (string)($result['RESULT'] ?? '');
-        if (in_array($resCode, ['OK', 'ALREADY_SENT_TODAY'], true)) {
-            $result = array_merge($result, StepsBuilder::getTodayStatus($uid, $localDate));
-        }
-
         return $result;
     }
 
-    /**
-     * POST /steps/summary
-     * Body: { ID_USER, TZ_OFFSET_MIN?, LOCAL_DATETIME? }
-     *
-     * Ответ: { RESULT, ..., CONFIRMED_DATES, CONFIRMED_DAYS_COUNT, PERIOD }
-     */
     public static function summary(array $b): array
     {
         $uid = trim((string)($b['ID_USER'] ?? ''));
@@ -108,5 +80,15 @@ class Steps
         ]);
 
         return array_merge(['RESULT' => 'OK'], $summary);
+    }
+
+    public static function history(array $b): array
+    {
+        $uid = trim((string)($b['ID_USER'] ?? ''));
+        if ($uid === '') {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'ID_USER required'];
+        }
+
+        return StepsBuilder::getHistory($uid);
     }
 }

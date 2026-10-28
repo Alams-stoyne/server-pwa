@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 20;
+        return 21;
     }
 
     public static function config(): array
@@ -33,7 +33,7 @@ class HlSetup
                     'UF_BLOCKED'           => ['string', ['SIZE' => 1]],
                     'UF_BLOCKED_AT'        => ['datetime', []],
                     'UF_BLOCK_REASON'      => ['string', ['SIZE' => 255]],
-                    'UF_IS_TEST'           => ['string', ['SIZE' => 1]], // ← v18: флаг тестового аккаунта
+                    'UF_IS_TEST'           => ['string', ['SIZE' => 1]],
                     'UF_TZ_OFFSET_MIN'     => ['integer', []],
                     'UF_TOTAL_STEPS'       => ['integer', []],
                     'UF_CONSENT_GRANTED'   => ['string', ['SIZE' => 1]],
@@ -410,6 +410,7 @@ class HlSetup
 
         $indexes = [
             'x5_pwa_uid_bindings' => [
+                'idx_x5pwa_bindings_dev'         => 'UF_DEVICE_ID',
                 'idx_x5pwa_bindings_total'       => 'UF_TOTAL_STEPS',
                 'idx_x5pwa_bindings_workpl'      => 'UF_WORKPLACE',
                 'idx_x5pwa_bindings_habit'       => 'UF_HABIT_ID',

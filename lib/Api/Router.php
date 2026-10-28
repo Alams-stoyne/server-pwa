@@ -14,6 +14,10 @@ class Router
 
     public static function handle(): void
     {
+        ini_set('display_errors', '0');
+        ini_set('html_errors', '0');
+        error_reporting(E_ALL);
+
         if (!self::hostAllowed()) return;
 
         $uri  = $_SERVER['REQUEST_URI'] ?? '/';
@@ -26,7 +30,6 @@ class Router
         if ($method === 'OPTIONS') {
             while (ob_get_level() > 0) ob_end_clean();
             http_response_code(204);
-            if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
             exit;
         }
 
@@ -34,6 +37,11 @@ class Router
             [$body, $status] = self::dispatch($path, $method);
             self::json($body, $status);
         } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                $e->getMessage() . "\n" . $e->getFile() . ':' . $e->getLine() . "\n" . $e->getTraceAsString(),
+                'Router::handle EXCEPTION',
+                '/x5.pwa.log'
+            );
             self::json(['RESULT' => 'ERROR', 'MESSAGE' => $e->getMessage()], 500);
         }
         exit;
@@ -62,7 +70,6 @@ class Router
             ];
             $isPublic = in_array($path, $publicPaths, true);
 
-            // GET-запросы (контент, лекции, задания) не блокируем
             if ($method === 'GET') {
                 $isPublic = true;
             }
@@ -152,6 +159,7 @@ class Router
         // ─── Шагомер ───
         if ($path === '/steps/send'    && $method === 'POST') return [Steps::send($body), 200];
         if ($path === '/steps/summary' && $method === 'POST') return [Steps::summary($body), 200];
+        if ($path === '/steps/history' && $method === 'POST') return [Steps::history($body), 200];
 
         // ─── Контент ───
         $m = [];
@@ -172,7 +180,7 @@ class Router
         if ($path === '/push/vapid'       && $method === 'GET')  return [PushApi::vapidInfo(), 200];
         if ($path === '/push/subscribe'   && $method === 'POST') return [PushApi::subscribe($body), 200];
         if ($path === '/push/unsubscribe' && $method === 'POST') return [PushApi::unsubscribe($body), 200];
-        if ($path === '/push/send'        && $method === 'POST') return PushApi::send($body);
+        if ($path === '/push/send'        && $method === 'POST') return [PushApi::send($body), 200];
         if ($path === '/push/broadcast'   && $method === 'POST') return [PushApi::broadcast($body), 200];
 
         // ─── Admin ───
@@ -206,13 +214,11 @@ class Router
         header('Content-Type: application/json; charset=utf-8');
 
         $json = (string)json_encode($obj, JSON_UNESCAPED_UNICODE);
-        header('Content-Length: ' . strlen($json));
-
+        
+        // ВАЖНО: Удалён заголовок Content-Length.
+        // Если на сервере включено сжатие (gzip), Nginx сжимает ответ,
+        // и старый Content-Length ломает соединение (ERR_CONNECTION_RESET).
         echo $json;
-
-        if (function_exists('fastcgi_finish_request')) {
-            fastcgi_finish_request();
-        }
         exit;
     }
 }

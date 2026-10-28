@@ -26,7 +26,14 @@ class Storage
         if (!$hl) throw new \RuntimeException("HL '{$hlName}' not found");
 
         $entity = HighloadBlockTable::compileEntity($hl);
-        return self::$dataClasses[$hlName] = $entity->getDataClass();
+        $dataClass = $entity->getDataClass();
+
+        // Защита для разных версий Bitrix
+        if (is_object($dataClass)) {
+            $dataClass = get_class($dataClass);
+        }
+
+        return self::$dataClasses[$hlName] = $dataClass;
     }
 
     public static function now(): DateTime { return new DateTime(); }
@@ -249,7 +256,7 @@ class Storage
     public static function unblockUser(string $uid): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc->getList([
+        $row = $dc::getList([
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
         ])->fetch();
@@ -272,7 +279,7 @@ class Storage
     public static function isBlocked(string $uid): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc->getList([
+        $row = $dc::getList([
             'select' => ['UF_BLOCKED'],
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
@@ -284,7 +291,7 @@ class Storage
     public static function isTestAccount(string $uid): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc->getList([
+        $row = $dc::getList([
             'select' => ['UF_IS_TEST'],
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
@@ -296,7 +303,7 @@ class Storage
     public static function toggleTestAccount(string $uid, bool $isTest): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc->getList([
+        $row = $dc::getList([
             'select' => ['ID', 'UF_WORKPLACE'],
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,

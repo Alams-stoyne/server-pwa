@@ -90,7 +90,6 @@ $filterFields = [
 $arFilter = [];
 $lAdmin->AddFilter($filterFields, $arFilter);
 
-// Хелпер для вытаскивания значений (как в других файлах)
 if (!function_exists('x5supFilterValue')) {
     function x5supFilterValue(array $arFilter, string $field): string
     {
@@ -170,6 +169,7 @@ $arHeader = [
     ['id' => 'UF_STATUS',      'content' => 'Статус',        'sort' => 'UF_STATUS',      'default' => true],
     ['id' => 'UF_MESSAGES_COUNT', 'content' => 'Сообщений',                               'default' => true],
     ['id' => 'UF_CREATED_AT',  'content' => 'Создан',        'sort' => 'UF_CREATED_AT',  'default' => false],
+    ['id' => 'ACTIONS',        'content' => 'Действия',                                   'default' => true],
 ];
 $lAdmin->AddHeaders($arHeader);
 
@@ -215,6 +215,14 @@ foreach ($data['rows'] as $t) {
 
     $row = $lAdmin->AddRow($ticketId, $arRes);
 
+    $detailUrl = 'x5_pwa_support_detail.php?lang=' . LANGUAGE_ID . '&ID=' . $ticketId;
+
+    // ID — ссылка
+    $row->AddViewField('ID', '<a href="' . $detailUrl . '"><b>' . $ticketId . '</b></a>');
+    
+    // Тема — ссылка
+    $row->AddViewField('UF_SUBJECT', '<a href="' . $detailUrl . '">' . htmlspecialcharsbx($subject) . '</a>');
+
     // Бейдж Reset UID
     if ($isReset) {
         $row->AddViewField('AUTH_ERROR', 
@@ -239,7 +247,7 @@ foreach ($data['rows'] as $t) {
             'ICON'    => 'view',
             'TEXT'    => 'Открыть',
             'DEFAULT' => true,
-            'LINK'    => 'x5_pwa_support_detail.php?lang=' . LANGUAGE_ID . '&ID=' . $ticketId,
+            'LINK'    => $detailUrl,
         ],
     ];
 

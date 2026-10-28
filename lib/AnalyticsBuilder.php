@@ -6,7 +6,18 @@ use Bitrix\Main\Application;
 class AnalyticsBuilder
 {
     /**
-     * Собирает воронку за период.
+     * Воронка за период.
+     *
+     * Считает ТОЛЬКО устройства, у которых есть запись в x5_pwa_uid_bindings
+     * (то есть они прошли /auth и получили UF_DEVICE_ID в привязках).
+     *
+     * Зачем: боты, краулеры, нагрузочные тесты и просто «зашёл-ушёл»
+     * шлют app_first_open, но НЕ регистрируются. Без фильтра такие устройства
+     * раздувают первый шаг воронки, а на последующих шагах их нет — получается
+     * фиктивная конверсия 0.5%.
+     *
+     * С JOIN конверсия честная: app_first_open → auth всегда 100% по
+     * определению выборки, а дальше видна реальная воронка онбординга.
      */
     public static function getFunnel(string $from, string $to): array
     {
@@ -16,21 +27,27 @@ class AnalyticsBuilder
         $fromSafe = $sqlHelper->forSql($from . ' 00:00:00');
         $toSafe   = $sqlHelper->forSql($to . ' 23:59:59');
 
-        $baseWhere = "UF_SERVER_AT >= '{$fromSafe}' AND UF_SERVER_AT <= '{$toSafe}'";
+        $baseWhere = "e.UF_SERVER_AT >= '{$fromSafe}' AND e.UF_SERVER_AT <= '{$toSafe}'";
 
         $steps = [
-            'app_first_open' => "UF_EVENT_NAME = 'app_first_open'",
-            'install_accepted' => "UF_EVENT_NAME = 'install_accepted'",
-            'registration_success' => "UF_EVENT_NAME = 'registration_success'",
-            'consent_granted' => "UF_EVENT_NAME = 'consent_granted'",
-            'onboarding_completed' => "UF_EVENT_NAME = 'onboarding_completed'",
-            'first_action' => "UF_EVENT_NAME IN ('lecture_read', 'practice_done', 'habit_completed', 'steps_sent', 'event_confirmed', 'reflection_sent')"
+            'app_first_open'       => "e.UF_EVENT_NAME = 'app_first_open'",
+            'install_accepted'     => "e.UF_EVENT_NAME = 'install_accepted'",
+            'registration_success' => "e.UF_EVENT_NAME = 'registration_success'",
+            'consent_granted'      => "e.UF_EVENT_NAME = 'consent_granted'",
+            'onboarding_completed' => "e.UF_EVENT_NAME = 'onboarding_completed'",
+            'first_action'         => "e.UF_EVENT_NAME IN ('lecture_read', 'practice_done', 'habit_completed', 'steps_sent', 'event_confirmed', 'reflection_sent')"
         ];
 
         $funnel = [];
         foreach ($steps as $key => $where) {
             try {
-                $row = $conn->query("SELECT COUNT(DISTINCT UF_DEVICE_ID) AS C FROM x5_pwa_analytics_events WHERE {$baseWhere} AND {$where}")->fetch();
+                $row = $conn->query(
+                    "SELECT COUNT(DISTINCT e.UF_DEVICE_ID) AS C
+                     FROM x5_pwa_analytics_events e
+                     INNER JOIN x5_pwa_uid_bindings b
+                       ON b.UF_DEVICE_ID = e.UF_DEVICE_ID
+                     WHERE {$baseWhere} AND {$where}"
+                )->fetch();
                 $funnel[$key] = (int)($row['C'] ?? 0);
             } catch (\Throwable $e) {
                 $funnel[$key] = 0;
@@ -41,7 +58,8 @@ class AnalyticsBuilder
     }
 
     /**
-     * Ежедневная динамика.
+     * Ежедневная динамика новых устройств.
+     * JOIN с привязками — считаем только те, кто в итоге зарегистрировался.
      */
     public static function getDailyDynamic(string $from, string $to): array
     {
@@ -52,12 +70,17 @@ class AnalyticsBuilder
         $toSafe   = $sqlHelper->forSql($to . ' 23:59:59');
 
         $sql = "SELECT
-                    DATE(UF_SERVER_AT) AS D,
-                    COUNT(DISTINCT UF_DEVICE_ID) AS C
-                FROM x5_pwa_analytics_events
-                WHERE UF_SERVER_AT >= '{$fromSafe}' AND UF_SERVER_AT <= '{$toSafe}' AND UF_EVENT_NAME = 'app_first_open'
-                GROUP BY DATE(UF_SERVER_AT)
+                    DATE(e.UF_SERVER_AT) AS D,
+                    COUNT(DISTINCT e.UF_DEVICE_ID) AS C
+                FROM x5_pwa_analytics_events e
+                INNER JOIN x5_pwa_uid_bindings b
+                  ON b.UF_DEVICE_ID = e.UF_DEVICE_ID
+                WHERE e.UF_SERVER_AT >= '{$fromSafe}'
+                  AND e.UF_SERVER_AT <= '{$toSafe}'
+                  AND e.UF_EVENT_NAME = 'app_first_open'
+                GROUP BY DATE(e.UF_SERVER_AT)
                 ORDER BY D ASC";
+
         try {
             return $conn->query($sql)->fetchAll();
         } catch (\Throwable $e) {
@@ -78,12 +101,12 @@ class AnalyticsBuilder
     }
 
     /**
-     * Определяет, сколько устройств пришло через браузер (ссылка) и сколько через ярлык (PWA).
+     * Определяет, сколько устройств пришло через браузер (ссылка) и сколько
+     * через ярлык (PWA).
      *
-     * Логика: для каждого устройства берём самое первое событие app_first_open в периоде
-     * и смотрим на поле isStandalone.
-     *   false → пришёл по ссылке в браузере (приглашение);
-     *   true  → открыл уже установленное приложение (ярлык).
+     * Логика: для каждого устройства берём самое первое событие app_first_open
+     * в периоде и смотрим на поле isStandalone. JOIN с привязками отсекает
+     * ботов и «зашёл-ушёл» — считаем только тех, кто дошёл до /auth.
      *
      * @return array{browser:int, pwa:int, total:int}
      */
@@ -108,6 +131,8 @@ class AnalyticsBuilder
                 GROUP BY UF_DEVICE_ID
             ) first ON main.UF_DEVICE_ID = first.UF_DEVICE_ID
                    AND main.UF_SERVER_AT = first.min_ts
+            INNER JOIN x5_pwa_uid_bindings b
+                ON b.UF_DEVICE_ID = main.UF_DEVICE_ID
             WHERE main.UF_EVENT_NAME = 'app_first_open'
             GROUP BY entry_type
         ";
@@ -131,6 +156,9 @@ class AnalyticsBuilder
 
     /**
      * Возвращает список UF_DEVICE_ID для указанного источника входа.
+     *
+     * JOIN с привязками — deviceIds заведомо «живые» (прошли /auth).
+     * Это гарантирует, что воронка по источникам согласована с общей воронкой.
      *
      * @param string $source 'browser' | 'pwa'
      * @return string[]
@@ -158,6 +186,8 @@ class AnalyticsBuilder
                 GROUP BY UF_DEVICE_ID
             ) first ON main.UF_DEVICE_ID = first.UF_DEVICE_ID
                    AND main.UF_SERVER_AT = first.min_ts
+            INNER JOIN x5_pwa_uid_bindings b
+                ON b.UF_DEVICE_ID = main.UF_DEVICE_ID
             WHERE main.UF_EVENT_NAME = 'app_first_open'
               AND main.UF_PROPS LIKE '{$pattern}'
         ";
@@ -173,8 +203,8 @@ class AnalyticsBuilder
     /**
      * Воронка онбординга для конкретного источника входа.
      *
-     * В отличие от старого метода — считает конверсию ТОЛЬКО по устройствам,
-     * которые впервые пришли из указанного источника (браузер или ярлык PWA).
+     * deviceIds уже отфильтрованы JOIN-ом в getDeviceIdsBySource — здесь
+     * дополнительный JOIN не нужен.
      *
      * Для группы 'pwa' шаг 'install_accepted' пропускается — они уже установлены.
      */
@@ -203,7 +233,6 @@ class AnalyticsBuilder
             'onboarding_completed'     => "UF_EVENT_NAME = 'onboarding_completed'",
         ];
 
-        // Для группы 'pwa' убираем шаг установки — они уже установлены
         if ($source === 'pwa') {
             unset($steps['install_accepted']);
         }
@@ -229,6 +258,12 @@ class AnalyticsBuilder
 
     /**
      * Установки и регистрации (общая статистика).
+     *
+     * Здесь JOIN с привязками НЕ применяется:
+     *   • ios_gate / android_prompt — это «сколько устройств видели экран»,
+     *     а не «сколько из них зарегистрировались»;
+     *   • android_installed — установки, считаются по факту install_accepted;
+     *   • reg_uid_taken / access_denied — операционные ошибки, нужны все случаи.
      */
     public static function getInstallAndRegStats(string $from, string $to): array
     {
@@ -352,7 +387,8 @@ class AnalyticsBuilder
             return false;
         }
     }
-        /**
+
+    /**
      * Разбивка install_accepted по полю PROPS.via:
      *   • prompt       — установка через нативный promptInstall()
      *   • appinstalled — установка через меню браузера (событие appinstalled)
@@ -402,7 +438,6 @@ class AnalyticsBuilder
             );
         }
 
-        // «unknown» — старый клиент без via
         try {
             $row = $conn->query(
                 "SELECT COUNT(DISTINCT UF_DEVICE_ID) AS C
@@ -419,10 +454,6 @@ class AnalyticsBuilder
 
     /**
      * Разбивка install_accepted по полю PROPS.platform (ios / android / desktop / unknown).
-     *
-     * Клиент передаёт platform в PROPS для install_prompt_shown уже давно
-     * (см. getInstallAndRegStats). Для install_accepted — с новой версии.
-     * Старые события (без platform) попадают в «unknown».
      *
      * @return array<string,int>  platform => количество устройств
      */

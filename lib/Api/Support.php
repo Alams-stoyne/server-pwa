@@ -5,10 +5,6 @@ use X5\Pwa\SupportBuilder;
 
 class Support
 {
-    /**
-     * POST /support/ticket/create
-     * Body: { ID_USER, SUBJECT, TEXT, IMAGES:[base64] }
-     */
     public static function create(array $b): array
     {
         $uid = trim((string)($b['ID_USER'] ?? ''));
@@ -25,10 +21,6 @@ class Support
         return SupportBuilder::createTicket($uid, $subject, $text, $images);
     }
 
-    /**
-     * POST /support/ticket/create_guest
-     * Body: { DEVICE_ID, UID?, AUTH_ERROR?, SUBJECT?, TEXT, IMAGES?:[], META?:{} }
-     */
     public static function createGuest(array $b): array
     {
         $deviceId = trim((string)($b['DEVICE_ID'] ?? ''));
@@ -58,7 +50,7 @@ class Support
 
     /**
      * POST /support/ticket/create_reset_uid
-     * Body: { DEVICE_ID, UID, RESET_REASONS: [], TEXT, IMAGES?:[] }
+     * Body: { DEVICE_ID, UID, RESET_REASONS: [], TEXT, IMAGES?:[], META?:{} }
      */
     public static function createResetUid(array $b): array
     {
@@ -67,23 +59,21 @@ class Support
         $text     = (string)($b['TEXT'] ?? '');
         $images   = $b['IMAGES'] ?? [];
         $reasons  = $b['RESET_REASONS'] ?? [];
+        $meta     = $b['META'] ?? [];
 
         if ($deviceId === '') return ['RESULT' => 'ERROR', 'MESSAGE' => 'DEVICE_ID required'];
         if ($uid === '')      return ['RESULT' => 'ERROR', 'MESSAGE' => 'UID required'];
         if ($text === '')     return ['RESULT' => 'ERROR', 'MESSAGE' => 'TEXT required'];
 
         if (!is_array($images)) $images = [];
+        if (!is_array($meta))   $meta   = [];
         if (!is_array($reasons)) {
             $reasons = is_string($reasons) ? explode(',', $reasons) : [];
         }
 
-        return SupportBuilder::createResetUidTicket($deviceId, $uid, $reasons, $text, $images);
+        return SupportBuilder::createResetUidTicket($deviceId, $uid, $reasons, $text, $images, $meta);
     }
 
-    /**
-     * POST /support/ticket/list
-     * Body: { ID_USER, STATUS?, PAGE?, PER_PAGE? }
-     */
     public static function tickets(array $b): array
     {
         $uid = trim((string)($b['ID_USER'] ?? ''));
@@ -98,10 +88,6 @@ class Support
         return $res;
     }
 
-    /**
-     * POST /support/ticket/get
-     * Body: { ID_USER, TICKET_ID }
-     */
     public static function get(array $b): array
     {
         $uid      = trim((string)($b['ID_USER'] ?? ''));
@@ -120,10 +106,6 @@ class Support
         ];
     }
 
-    /**
-     * POST /support/ticket/guest_get
-     * Body: { DEVICE_ID, TICKET_ID }
-     */
     public static function getGuest(array $b): array
     {
         $deviceId = trim((string)($b['DEVICE_ID'] ?? ''));
@@ -142,10 +124,6 @@ class Support
         ];
     }
 
-    /**
-     * POST /support/ticket/message
-     * Body: { ID_USER, TICKET_ID, TEXT, IMAGES?:[base64] }
-     */
     public static function send(array $b): array
     {
         $uid      = trim((string)($b['ID_USER'] ?? ''));
@@ -161,10 +139,6 @@ class Support
         return SupportBuilder::addUserMessage($uid, $ticketId, $text, $images);
     }
 
-    /**
-     * POST /support/ticket/guest_message
-     * Body: { DEVICE_ID, TICKET_ID, TEXT, IMAGES?:[base64] }
-     */
     public static function sendGuest(array $b): array
     {
         $deviceId = trim((string)($b['DEVICE_ID'] ?? ''));

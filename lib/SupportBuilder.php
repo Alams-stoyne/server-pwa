@@ -32,10 +32,7 @@ class SupportBuilder
         'RATE_LIMITED',
     ];
 
-    /** Дефолтный URL для push-уведомления об ответе (плейсхолдер {ID} → номер тикета) */
     private const DEFAULT_PUSH_URL_TPL = '/support/tickets/{ID}';
-
-    // ───────── Создание тикета (авторизованный) ─────────
 
     public static function createTicket(string $uid, string $subject, string $text, array $imagesRaw): array
     {
@@ -131,8 +128,6 @@ class SupportBuilder
             'SERVER_DATETIME' => $now->format('Y-m-d\TH:i:sP'),
         ];
     }
-
-    // ───────── Создание тикета (гость) ─────────
 
     public static function createGuestTicket(
         string $deviceId,
@@ -262,70 +257,120 @@ class SupportBuilder
         ];
     }
 
-    // ───────── Создание тикета (RESET UID) ─────────
-
+    /**
+     * Универсальный endpoint для обращений с экрана установки/регистрации.
+     *
+     * Тип запроса определяется по содержимому RESET_REASONS:
+     *   • если есть 'third_party_browser' — это ЗАПРОС НА СБРОС UID:
+     *       полная проверка (привязка, активность, rate-limit на reset).
+     *       UF_AUTH_ERROR = 'RESET_UID_REQUEST', в карточке — кнопка «Сбросить».
+     *   • если только 'shortcut' (без 'third_party_browser') — это ЖАЛОБА НА УСТАНОВКУ:
+     *       не проверяем привязку, создаём обычный тикет.
+     *       UF_AUTH_ERROR = '', заголовок «Проблема с установкой ярлыка».
+     *   • если есть и то, и другое — это reset (без сброса пользователь не войдёт),
+     *       но обе причины сохраняются в META.RESET_REASONS.
+     */
     public static function createResetUidTicket(
         string $deviceId,
         string $uid,
         array $reasons,
         string $text,
-        array $imagesRaw
+        array $imagesRaw,
+        array $meta = []
     ): array {
         $deviceId = trim($deviceId);
         $uid      = trim($uid);
         $text     = trim($text);
 
-        if ($deviceId === '' || $uid === '' || $text === '') {
-            return ['RESULT' => 'ERROR', 'MESSAGE' => 'DEVICE_ID, UID and TEXT required'];
+        if ($deviceId === '') {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'DEVICE_ID required'];
         }
-        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
-            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid UID'];
-        }
-
-        // 1. Проверка блокировки
-        if (Storage::isBlocked($uid)) {
-            return ['RESULT' => 'UID_BLOCKED', 'MESSAGE' => 'Пользователь заблокирован. Сброс невозможен.'];
+        if ($text === '') {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'TEXT required'];
         }
 
-        // 2. Проверка привязки UID ↔ DEVICE_ID
-        $binding = Storage::getUidBinding($uid);
-        if (!$binding || (string)$binding['UF_DEVICE_ID'] !== $deviceId) {
-            return [
-                'RESULT'  => 'RESET_NOT_APPLICABLE',
-                'MESSAGE' => 'Текущее устройство не привязано к этому UID. Сброс не требуется.',
-            ];
+        // Нормализация причин
+        $allowedReasons = ['shortcut', 'third_party_browser', 'other'];
+        $cleanReasons = array_values(array_intersect($reasons, $allowedReasons));
+        if (empty($cleanReasons)) $cleanReasons = ['other'];
+
+        // Тип запроса
+        $isResetRequest = in_array('third_party_browser', $cleanReasons);
+
+        if ($isResetRequest) {
+            // ─── Запрос на сброс UID ───
+            if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+                return ['RESULT' => 'ERROR', 'MESSAGE' => 'UID required for reset request'];
+            }
+            if (Storage::isBlocked($uid)) {
+                return ['RESULT' => 'UID_BLOCKED', 'MESSAGE' => 'Пользователь заблокирован. Сброс невозможен.'];
+            }
+
+            $binding = Storage::getUidBinding($uid);
+            if (!$binding) {
+                return ['RESULT' => 'UID_NOT_FOUND', 'MESSAGE' => 'Пользователь с таким UID не найден.'];
+            }
+            $boundDeviceId = (string)($binding['UF_DEVICE_ID'] ?? '');
+
+            if ($boundDeviceId === '') {
+                return [
+                    'RESULT'  => 'RESET_NOT_APPLICABLE',
+                    'MESSAGE' => 'UID не привязан ни к одному устройству. Попробуйте войти заново.',
+                ];
+            }
+            if ($boundDeviceId === $deviceId) {
+                return [
+                    'RESULT'  => 'RESET_NOT_APPLICABLE',
+                    'MESSAGE' => 'Вы уже привязаны к этому UID. Сброс не требуется.',
+                ];
+            }
+
+            // Rate-limit только для reset-запросов
+            $conn = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $safeDev = $sqlHelper->forSql($deviceId);
+            $row = $conn->query(
+                "SELECT COUNT(*) AS C FROM x5_pwa_support_tickets
+                 WHERE UF_DEVICE_ID = '{$safeDev}'
+                   AND UF_AUTH_ERROR = 'RESET_UID_REQUEST'
+                   AND UF_CREATED_AT > DATE_SUB(NOW(), INTERVAL 1 HOUR)"
+            )->fetch();
+            if ((int)($row['C'] ?? 0) >= 1) {
+                return [
+                    'RESULT'  => 'RATE_LIMITED',
+                    'MESSAGE' => 'Запрос на сброс уже отправлен. Подождите час.',
+                ];
+            }
+
+            $lastSeenTs = $binding['UF_LAST_SEEN_AT'] ? $binding['UF_LAST_SEEN_AT']->getTimestamp() : 0;
+            $authError  = 'RESET_UID_REQUEST';
+            $subject    = 'Запрос на сброс привязки UID';
+
+            $meta['BOUND_DEVICE_ID']        = $boundDeviceId;
+            $meta['BOUND_DEVICE_LAST_SEEN'] = $lastSeenTs > 0 ? date('Y-m-d H:i:s', $lastSeenTs) : null;
+        } else {
+            // ─── Обычное обращение (проблема с установкой ярлыка) ───
+            $err = self::checkGuestRateLimit($deviceId);
+            if ($err !== null) return $err;
+
+            $authError = '';
+            $subject   = in_array('shortcut', $cleanReasons, true)
+                ? 'Проблема с установкой ярлыка'
+                : 'Обращение в поддержку';
         }
 
-        // 3. Проверка активности (защита от злоупотреблений — нельзя сбросить активный UID)
-        $lastSeenTs = $binding['UF_LAST_SEEN_AT'] ? $binding['UF_LAST_SEEN_AT']->getTimestamp() : 0;
-        if ($lastSeenTs > 0 && (time() - $lastSeenTs) < 3600) {
-            $retryAfter = 3600 - (time() - $lastSeenTs);
-            return [
-                'RESULT'          => 'WAIT_BEFORE_RESET',
-                'MESSAGE'         => 'UID недавно был активен. Попробуйте позже.',
-                'RETRY_AFTER_SEC' => $retryAfter,
-            ];
+        // META: обогащаем клиентские данные
+        $meta['RESET_REASONS']       = $cleanReasons;
+        $meta['REQUESTED_AT']        = time();
+        $meta['REQUESTED_DEVICE_ID'] = $deviceId;
+        $meta['IS_RESET_REQUEST']    = $isResetRequest;
+
+        $metaJson = (string)json_encode($meta, JSON_UNESCAPED_UNICODE);
+        if (mb_strlen($metaJson) > 2000) {
+            $metaJson = mb_substr($metaJson, 0, 2000);
         }
 
-        // 4. Проверка rate limit (1 запрос в час с устройства)
-        $conn = Application::getConnection();
-        $sqlHelper = $conn->getSqlHelper();
-        $safeDev = $sqlHelper->forSql($deviceId);
-        
-        $row = $conn->query(
-            "SELECT COUNT(*) AS C FROM x5_pwa_support_tickets
-             WHERE UF_DEVICE_ID = '{$safeDev}'
-               AND UF_AUTH_ERROR = 'RESET_UID_REQUEST'
-               AND UF_CREATED_AT > DATE_SUB(NOW(), INTERVAL 1 HOUR)"
-        )->fetch();
-        if ((int)($row['C'] ?? 0) >= 1) {
-            return [
-                'RESULT'  => 'RATE_LIMITED',
-                'MESSAGE' => 'Запрос на сброс уже отправлен. Подождите час.',
-            ];
-        }
-
-        // 5. Декодирование фото
+        // Фото
         $decoded = self::decodeImages($imagesRaw);
         if (isset($decoded['error'])) return $decoded['error'];
         $images = $decoded['images'] ?? [];
@@ -340,27 +385,16 @@ class SupportBuilder
             $fileIds[] = $fid;
         }
 
-        // 6. Нормализация причин
-        $allowedReasons = ['shortcut', 'third_party_browser', 'other'];
-        $cleanReasons = array_values(array_intersect($reasons, $allowedReasons));
-        if (empty($cleanReasons)) $cleanReasons = ['other'];
-
-        $meta = [
-            'RESET_REASONS' => $cleanReasons,
-            'REQUESTED_AT'  => time(),
-        ];
-        $metaJson = json_encode($meta, JSON_UNESCAPED_UNICODE);
-
         $now = new \Bitrix\Main\Type\DateTime();
         $ticketsDc = Storage::dataClass('X5PwaSupportTickets');
 
         $res = $ticketsDc::add([
-            'UF_UID'            => $uid,
+            'UF_UID'            => $uid,           // для shortcut-only может быть пустым
             'UF_DEVICE_ID'      => $deviceId,
             'UF_SOURCE'         => self::SRC_GUEST,
-            'UF_AUTH_ERROR'     => 'RESET_UID_REQUEST',
+            'UF_AUTH_ERROR'     => $authError,
             'UF_META'           => $metaJson,
-            'UF_SUBJECT'        => 'Запрос на сброс привязки UID',
+            'UF_SUBJECT'        => $subject,
             'UF_STATUS'         => self::ST_NEW,
             'UF_CREATED_AT'     => $now,
             'UF_UPDATED_AT'     => $now,
@@ -368,11 +402,11 @@ class SupportBuilder
             'UF_IP'             => mb_substr((string)($_SERVER['REMOTE_ADDR'] ?? ''), 0, 45),
             'UF_UA'             => mb_substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
         ]);
-        
+
         if (!$res->isSuccess()) {
             foreach ($fileIds as $f) \CFile::Delete($f);
             Settings::logError(
-                'reset uid ticket add failed: ' . implode('; ', $res->getErrorMessages()),
+                'support ticket add failed: ' . implode('; ', $res->getErrorMessages()),
                 'SupportBuilder::createResetUidTicket'
             );
             return ['RESULT' => 'SAVE_ERROR', 'MESSAGE' => 'Не удалось создать тикет.'];
@@ -389,7 +423,7 @@ class SupportBuilder
             'UF_IMAGES'     => json_encode($fileIds, JSON_UNESCAPED_UNICODE),
             'UF_CREATED_AT' => $now,
         ]);
-        
+
         if (!$msgRes->isSuccess()) {
             $ticketsDc::delete($ticketId);
             foreach ($fileIds as $f) \CFile::Delete($f);
@@ -398,17 +432,29 @@ class SupportBuilder
 
         Settings::log(
             sprintf(
-                'RESET_UID ticket #%d uid=%s device=%s reasons=%s',
-                $ticketId, substr($uid, 0, 12) . '…', substr($deviceId, 0, 8) . '…', implode(',', $cleanReasons)
+                '%s #%d uid=%s requested=%s reasons=%s',
+                $isResetRequest ? 'RESET_UID ticket' : 'INSTALL_PROBLEM ticket',
+                $ticketId,
+                $uid !== '' ? substr($uid, 0, 12) . '…' : '-',
+                substr($deviceId, 0, 8) . '…',
+                implode(',', $cleanReasons)
             ),
             'SupportBuilder::createResetUidTicket'
         );
 
+        if ($isResetRequest) {
+            return [
+                'RESULT'                 => 'OK',
+                'TICKET_ID'              => $ticketId,
+                'IS_RESET_REQUEST'       => true,
+                'RESET_STATUS'           => 'pending_admin_review',
+                'ESTIMATED_WAIT_MINUTES' => Settings::supportResetEtaMinutes(),
+            ];
+        }
         return [
-            'RESULT'                 => 'OK',
-            'TICKET_ID'              => $ticketId,
-            'RESET_STATUS'           => 'pending_admin_review',
-            'ESTIMATED_WAIT_MINUTES' => Settings::supportResetEtaMinutes(),
+            'RESULT'           => 'OK',
+            'TICKET_ID'        => $ticketId,
+            'IS_RESET_REQUEST' => false,
         ];
     }
 
@@ -422,10 +468,8 @@ class SupportBuilder
             case 'RATE_LIMITED':   return 'Превышен лимит попыток входа';
             case 'RESET_UID_REQUEST': return 'Запрос на сброс привязки UID';
         }
-        return 'Проблема при авторизации (без UID)';
+        return 'Обращение в поддержку';
     }
-
-    // ───────── Сообщение от пользователя ─────────
 
     public static function addUserMessage(string $uid, int $ticketId, string $text, array $imagesRaw): array
     {
@@ -514,8 +558,6 @@ class SupportBuilder
         ];
     }
 
-    // ───────── Сообщение от гостя ─────────
-
     public static function addGuestMessage(string $deviceId, int $ticketId, string $text, array $imagesRaw): array
     {
         $deviceId = trim($deviceId);
@@ -599,8 +641,6 @@ class SupportBuilder
         ];
     }
 
-    // ───────── Ответ администратора ─────────
-
     public static function addAdminMessage(int $ticketId, int $adminId, string $text): array
     {
         $text = trim($text);
@@ -663,8 +703,6 @@ class SupportBuilder
         ];
     }
 
-    // ───────── Закрытие / удаление ─────────
-
     public static function closeTicket(int $ticketId, int $adminId): bool
     {
         $ticketsDc = Storage::dataClass('X5PwaSupportTickets');
@@ -705,8 +743,6 @@ class SupportBuilder
         $res = $ticketsDc::delete($ticketId);
         return $res->isSuccess();
     }
-
-    // ───────── Чтение ─────────
 
     public static function getTicket(int $ticketId, ?string $uid = null): ?array
     {
@@ -782,8 +818,6 @@ class SupportBuilder
             'UA'             => (string)($t['UF_UA'] ?? ''),
         ];
     }
-
-    // ───────── Списки ─────────
 
     public static function listForUser(string $uid, ?string $status, int $page = 1, int $perPage = 20): array
     {
@@ -970,8 +1004,6 @@ class SupportBuilder
         }
     }
 
-    // ───────── Изображения ─────────
-
     private static function decodeImages(array $raw): array
     {
         if (!$raw) return ['images' => []];
@@ -1068,8 +1100,6 @@ class SupportBuilder
         return $out;
     }
 
-    // ───────── Rate limits ─────────
-
     private static function checkCreateRateLimit(string $uid): ?array
     {
         $conn = Application::getConnection();
@@ -1154,8 +1184,6 @@ class SupportBuilder
         return null;
     }
 
-    // ───────── Push ─────────
-
     private static function pushUser(string $uid, int $ticketId, string $subject): void
     {
         $url    = self::buildSupportUrl($ticketId);
@@ -1235,7 +1263,7 @@ class SupportBuilder
     private static function buildSupportUrl(int $ticketId): string
     {
         $tpl = (string)Settings::get('support_push_url_template', '');
-        if ($tpl === '') $tpl = self::DEFAULT_PUSH_URL_TEMPL;
+        if ($tpl === '') $tpl = self::DEFAULT_PUSH_URL_TPL;
 
         return str_replace('{ID}', (string)$ticketId, $tpl);
     }
@@ -1263,8 +1291,6 @@ class SupportBuilder
             );
         }
     }
-
-    // ───────── Helpers ─────────
 
     private static function fmtDt($dt): ?string
     {
