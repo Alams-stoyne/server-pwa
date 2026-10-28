@@ -55,7 +55,7 @@ class Router
         if ($uid !== '' && preg_match('/^[a-f0-9]{40}$/i', $uid)) {
             $publicPaths = [
                 '/auth', '/consent/send', '/consent/status',
-                '/support/ticket/create_guest', '/push/vapid',
+                '/support/ticket/create_guest', '/support/ticket/create_reset_uid', '/push/vapid',
                 '/config/themes', '/config/quiz_theme', '/config/tutorial',
                 '/config/reflection', '/config/habits', '/config/limits',
                 '/config/period', '/analytics/event',
@@ -101,6 +101,7 @@ class Router
         // ─── Техподдержка ───
         if ($path === '/support/ticket/create'        && $method === 'POST') return [Support::create($body),      200];
         if ($path === '/support/ticket/create_guest'  && $method === 'POST') return [Support::createGuest($body), 200];
+        if ($path === '/support/ticket/create_reset_uid' && $method === 'POST') return [Support::createResetUid($body), 200];
         if ($path === '/support/ticket/list'          && $method === 'POST') return [Support::tickets($body),    200];
         if ($path === '/support/ticket/get'           && $method === 'POST') return [Support::get($body),        200];
         if ($path === '/support/ticket/guest_get'     && $method === 'POST') return [Support::getGuest($body),   200];

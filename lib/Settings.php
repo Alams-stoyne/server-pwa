@@ -291,9 +291,6 @@ class Settings
     }
 
     // ── Флаг пересборки дампов вне очереди (общий) ──
-    // Ставится при любом изменении настроек, влияющих на содержимое дампов
-    // (например, смена периода статистики). Scheduler увидит флаг и
-    // пересоберёт всё вне очереди, не дожидаясь 24-часового интервала.
     public static function dumpsDirty(): bool
     {
         return self::getBool('dumps_dirty', false);
@@ -339,6 +336,15 @@ class Settings
         $v = self::getInt('outbox_batch_size', 500);
         if ($v < 50)   $v = 50;
         if ($v > 5000) $v = 5000;
+        return $v;
+    }
+
+    // ── Поддержка: сброс UID ──
+    public static function supportResetEtaMinutes(): int
+    {
+        $v = self::getInt('support_reset_eta_minutes', 60);
+        if ($v < 5)   $v = 5;
+        if ($v > 1440) $v = 1440; // не больше суток
         return $v;
     }
 }

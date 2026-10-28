@@ -1,6 +1,6 @@
 <?php
 /**
- * Техподдержка — список обращений.
+ * PWA — Техподдержка (список тикетов).
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -8,14 +8,14 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 use Bitrix\Main\Loader;
 use X5\Pwa\SupportBuilder;
 
-$moduleId     = 'x5.pwa';
+$moduleId = 'x5.pwa';
 $MODULE_RIGHT = $APPLICATION->GetGroupRight($moduleId);
 if ($MODULE_RIGHT < 'W') $APPLICATION->AuthForm('Доступ запрещён');
 
 Loader::includeModule($moduleId);
 Loader::includeModule('highloadblock');
 
-$APPLICATION->SetTitle('PWA — Обращения в поддержку');
+$APPLICATION->SetTitle('PWA — Техподдержка');
 
 $sTableID = 'x5_pwa_support';
 $oSort    = new CAdminUiSorting($sTableID, 'UF_UPDATED_AT', 'desc');
@@ -24,86 +24,127 @@ $order    = mb_strtoupper($oSort->getOrder());
 
 $lAdmin = new CAdminUiList($sTableID, $oSort);
 
+// ─── Фильтр ───
 $filterFields = [
-    ['id' => 'USER',      'name' => 'Пользователь / Device ID', 'type' => 'string', 'filterable' => '?', 'quickSearch' => '?', 'default' => true],
-    ['id' => 'STATUS',    'name' => 'Статус', 'type' => 'list', 'items' => [
-        ''                   => '— любой —',
-        SupportBuilder::ST_NEW      => 'Ждёт ответа',
-        SupportBuilder::ST_ANSWERED => 'Отвечено',
-        SupportBuilder::ST_CLOSED   => 'Закрыто',
-    ], 'filterable' => '', 'default' => true],
-    ['id' => 'SOURCE',    'name' => 'Источник', 'type' => 'list', 'items' => [
-        ''                       => '— любой —',
-        SupportBuilder::SRC_APP  => 'Авторизованный',
-        SupportBuilder::SRC_GUEST=> 'Гость (не авторизован)',
-    ], 'filterable' => '', 'default' => true],
-    ['id' => 'CREATED_AT', 'name' => 'Дата обращения',        'type' => 'date', 'filterable' => '', 'default' => true],
-    ['id' => 'UPDATED_AT', 'name' => 'Последняя коммуникация','type' => 'date', 'filterable' => '', 'default' => true],
+    [
+        'id'         => 'STATUS',
+        'name'       => 'Статус',
+        'type'       => 'list',
+        'items'      => [
+            ''         => '— любой —',
+            'new'      => 'Новые',
+            'answered' => 'Отвеченные',
+            'closed'   => 'Закрытые',
+        ],
+        'filterable' => '',
+        'default'    => true,
+    ],
+    [
+        'id'         => 'SOURCE',
+        'name'       => 'Источник',
+        'type'       => 'list',
+        'items'      => [
+            ''           => '— любой —',
+            'app'        => 'Авторизованные',
+            'app_unauth' => 'Гости (без входа)',
+        ],
+        'filterable' => '',
+        'default'    => true,
+    ],
+    [
+        'id'         => 'AUTH_ERROR',
+        'name'       => 'Тип ошибки / Reset',
+        'type'       => 'list',
+        'items'      => [
+            ''                  => '— любой —',
+            'RESET_UID_REQUEST' => 'Запросы на сброс UID',
+            'NO_RESET'          => 'Без запросов на сброс',
+        ],
+        'filterable' => '',
+        'default'    => true,
+    ],
+    [
+        'id'         => 'DATE_CREATED',
+        'name'       => 'Дата создания',
+        'type'       => 'date',
+        'filterable' => '',
+        'default'    => true,
+    ],
+    [
+        'id'         => 'DATE_UPDATED',
+        'name'       => 'Дата обновления',
+        'type'       => 'date',
+        'filterable' => '',
+        'default'    => true,
+    ],
+    [
+        'id'         => 'USER',
+        'name'       => 'Пользователь (UID, ФИО, ник)',
+        'type'       => 'string',
+        'filterable' => '?',
+        'quickSearch'=> '?',
+        'default'    => true,
+    ],
 ];
 
 $arFilter = [];
 $lAdmin->AddFilter($filterFields, $arFilter);
 
-function x5supFilterValue(array $arFilter, string $field): string
-{
-    $variants = [$field, '?' . $field, '~' . $field, '~?' . $field, '?' . '~' . $field, 'find_' . $field, 'find_?' . $field, 'find_~' . $field];
-    foreach ($variants as $key) {
-        if (isset($arFilter[$key])) {
-            $v = $arFilter[$key]; if (is_array($v)) $v = reset($v);
-            $v = trim((string)$v); if ($v !== '') return $v;
+// Хелпер для вытаскивания значений (как в других файлах)
+if (!function_exists('x5supFilterValue')) {
+    function x5supFilterValue(array $arFilter, string $field): string
+    {
+        $variants = [
+            $field, '?' . $field, '~' . $field, '~?' . $field, '?' . '~' . $field,
+            'find_' . $field, 'find_?' . $field, 'find_~' . $field,
+        ];
+        foreach ($variants as $key) {
+            if (isset($arFilter[$key])) {
+                $v = $arFilter[$key];
+                if (is_array($v)) $v = reset($v);
+                $v = trim((string)$v);
+                if ($v !== '') return $v;
+            }
         }
-    }
-    foreach ($variants as $key) {
-        if (isset($_GET[$key])) {
-            $v = $_GET[$key]; if (is_array($v)) $v = reset($v);
-            $v = trim((string)$v); if ($v !== '') return $v;
+        foreach ($variants as $key) {
+            if (isset($_GET[$key])) {
+                $v = $_GET[$key];
+                if (is_array($v)) $v = reset($v);
+                $v = trim((string)$v);
+                if ($v !== '') return $v;
+            }
         }
+        return '';
     }
-    return '';
 }
 
-$userQuery = x5supFilterValue($arFilter, 'USER');
 $status    = x5supFilterValue($arFilter, 'STATUS');
 $source    = x5supFilterValue($arFilter, 'SOURCE');
-$dateFrom  = x5supFilterValue($arFilter, 'CREATED_AT_from');
-$dateTo    = x5supFilterValue($arFilter, 'CREATED_AT_to');
-$updFrom   = x5supFilterValue($arFilter, 'UPDATED_AT_from');
-$updTo     = x5supFilterValue($arFilter, 'UPDATED_AT_to');
+$authError = x5supFilterValue($arFilter, 'AUTH_ERROR');
+$userQuery = x5supFilterValue($arFilter, 'USER');
 
-if ($arIDs = $lAdmin->GroupAction()) {
-    $action = $lAdmin->GetAction();
-    if (in_array($action, ['close', 'delete'], true)) {
-        if ($lAdmin->IsGroupActionToAll()) {
-            $all = SupportBuilder::listForAdmin([
-                'user' => $userQuery, 'status' => $status, 'source' => $source,
-                'date_from' => $dateFrom, 'date_to' => $dateTo,
-                'upd_from' => $updFrom, 'upd_to' => $updTo,
-                'noPaging' => true, 'perPage' => 0,
-            ]);
-            $arIDs = array_column($all['rows'], 'ID');
-        }
-        $adminId = (int)$USER->GetID();
-        foreach ($arIDs as $id) {
-            $id = (int)$id;
-            if ($id <= 0) continue;
-            if ($action === 'close')  SupportBuilder::closeTicket($id, $adminId);
-            if ($action === 'delete') SupportBuilder::deleteTicket($id);
-        }
-        if (!$lAdmin->hasGroupErrors()) {
-            LocalRedirect($APPLICATION->GetCurPage() . '?lang=' . LANGUAGE_ID);
-        }
-    }
-}
+$dateCreatedFrom = x5supFilterValue($arFilter, 'DATE_CREATED_from');
+$dateCreatedTo   = x5supFilterValue($arFilter, 'DATE_CREATED_to');
+$dateUpdatedFrom = x5supFilterValue($arFilter, 'DATE_UPDATED_from');
+$dateUpdatedTo   = x5supFilterValue($arFilter, 'DATE_UPDATED_to');
 
+// ─── Данные ───
 $page    = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
 $perPage = 50;
 
 $data = SupportBuilder::listForAdmin([
-    'user' => $userQuery, 'status' => $status, 'source' => $source,
-    'date_from' => $dateFrom, 'date_to' => $dateTo,
-    'upd_from' => $updFrom, 'upd_to' => $updTo,
-    'sort' => $by, 'sortDir' => $order,
-    'page' => $page, 'perPage' => $perPage,
+    'status'     => $status,
+    'source'     => $source,
+    'auth_error' => $authError,
+    'user'       => $userQuery,
+    'date_from'  => $dateCreatedFrom,
+    'date_to'    => $dateCreatedTo,
+    'upd_from'   => $dateUpdatedFrom,
+    'upd_to'     => $dateUpdatedTo,
+    'sort'       => $by,
+    'sortDir'    => $order,
+    'page'       => $page,
+    'perPage'    => $perPage,
 ]);
 
 $dbRes = new CDBResult();
@@ -118,114 +159,91 @@ $rsData->NavRecordCount = (int)$data['total'];
 
 $lAdmin->SetNavigationParams($rsData, ['nPageSize' => $perPage]);
 
+// ─── Колонки ───
 $arHeader = [
-    ['id' => 'ID',            'content' => 'ID',       'sort' => 'ID',            'default' => true],
-    ['id' => 'STATUS',        'content' => 'Статус',                                'default' => true],
-    ['id' => 'SOURCE',        'content' => 'Источник',                              'default' => true],
-    ['id' => 'USER',          'content' => 'Пользователь / Device ID',              'default' => true],
-    ['id' => 'SUBJECT',       'content' => 'Тема',                                  'default' => true],
-    ['id' => 'MESSAGES_COUNT','content' => 'Сообщений',                             'default' => true],
-    ['id' => 'CREATED_AT',    'content' => 'Создано',   'sort' => 'UF_CREATED_AT', 'default' => true],
-    ['id' => 'UPDATED_AT',    'content' => 'Обновлено', 'sort' => 'UF_UPDATED_AT', 'default' => true],
+    ['id' => 'ID',             'content' => 'ID',            'sort' => 'ID',             'default' => true],
+    ['id' => 'AUTH_ERROR',     'content' => 'Reset UID',                                  'default' => true],
+    ['id' => 'UF_UPDATED_AT',  'content' => 'Обновлён',      'sort' => 'UF_UPDATED_AT',  'default' => true],
+    ['id' => 'USER',           'content' => 'Пользователь',                               'default' => true],
+    ['id' => 'UF_SOURCE',      'content' => 'Источник',                                   'default' => true],
+    ['id' => 'UF_SUBJECT',     'content' => 'Тема',                                       'default' => true],
+    ['id' => 'UF_STATUS',      'content' => 'Статус',        'sort' => 'UF_STATUS',      'default' => true],
+    ['id' => 'UF_MESSAGES_COUNT', 'content' => 'Сообщений',                               'default' => true],
+    ['id' => 'UF_CREATED_AT',  'content' => 'Создан',        'sort' => 'UF_CREATED_AT',  'default' => false],
 ];
 $lAdmin->AddHeaders($arHeader);
 
-$formatDate = function (?int $ms): string {
-    if (!$ms) return '—';
-    return date('d.m.Y H:i', (int)($ms / 1000));
-};
-
-$statusMap = [
-    SupportBuilder::ST_NEW      => ['Ждёт ответа',  '#f5a623', '#fff'],
-    SupportBuilder::ST_ANSWERED => ['Отвечено',     '#3a7d1c', '#fff'],
-    SupportBuilder::ST_CLOSED   => ['Закрыто',      '#888',    '#fff'],
+$statusLabels = [
+    'new'      => ['Новый', '#fdf3cf', '#8a6b00'],
+    'answered' => ['Отвечен', '#e6f5d8', '#3a7d1c'],
+    'closed'   => ['Закрыт', '#f0f2f5', '#666'],
 ];
 
 foreach ($data['rows'] as $t) {
-    $id      = (int)$t['ID'];
-    $status  = (string)$t['STATUS'];
-    $src     = (string)$t['SOURCE'];
-    $isGuest = $src === SupportBuilder::SRC_GUEST;
-    $badge   = $statusMap[$status] ?? [$status, '#ccc', '#000'];
+    $ticketId  = (int)$t['ID'];
+    $uid       = (string)$t['UID'];
+    $deviceId  = (string)$t['DEVICE_ID'];
+    $subject   = (string)$t['SUBJECT'];
+    $st        = (string)$t['STATUS'];
+    $stInfo    = $statusLabels[$st] ?? $statusLabels['new'];
+    $isReset   = ($t['AUTH_ERROR'] === 'RESET_UID_REQUEST');
+    
+    // Форматирование дат
+    $createdAt = $t['CREATED_AT'] > 0 ? date('d.m.Y H:i', (int)($t['CREATED_AT'] / 1000)) : '—';
+    $updatedAt = $t['UPDATED_AT'] > 0 ? date('d.m.Y H:i', (int)($t['UPDATED_AT'] / 1000)) : '—';
 
     // Пользователь
-    $userLabel = '';
-    $userSub   = '';
-    if ($isGuest) {
-        $dev = (string)$t['DEVICE_ID'];
-        $userLabel = '[Гость] ' . ($dev !== '' ? substr($dev, 0, 8) : '');
-        $userSub   = $dev;
-        if ($t['AUTH_ERROR']) {
-            $userSub .= ' · ' . (string)$t['AUTH_ERROR'];
-        }
-    } else {
-        $userLabel = trim((string)$t['NICKNAME']);
-        if ($userLabel === '') $userLabel = trim((string)$t['FIO']);
-        if ($userLabel === '') $userLabel = substr((string)$t['UID'], 0, 10) . '…';
-        $userSub = substr((string)$t['UID'], 0, 16);
+    $userLabel = trim((string)($t['NICKNAME'] ?: $t['FIO']));
+    if ($userLabel === '') $userLabel = substr($uid, 0, 10) . '…';
+    $userHtml = '<b>' . htmlspecialcharsbx($userLabel) . '</b>';
+    if ($uid !== '') {
+        $userHtml .= '<br><span style="font-family:monospace;font-size:10px;color:#888">' 
+                   . htmlspecialcharsbx(substr($uid, 0, 16)) . '…</span>';
     }
 
     $arRes = [
-        'ID'             => $id,
-        'STATUS'         => $status,
-        'SOURCE'         => $src,
-        'USER'           => $userLabel,
-        'SUBJECT'        => (string)$t['SUBJECT'],
-        'MESSAGES_COUNT' => (int)$t['MESSAGES_COUNT'],
-        'CREATED_AT'     => $formatDate((int)$t['CREATED_AT']),
-        'UPDATED_AT'     => $formatDate((int)$t['UPDATED_AT']),
+        'ID'              => $ticketId,
+        'AUTH_ERROR'      => $isReset ? 'RESET' : '',
+        'UF_UPDATED_AT'   => $updatedAt,
+        'USER'            => $userLabel,
+        'UF_SOURCE'       => (string)$t['SOURCE'],
+        'UF_SUBJECT'      => $subject,
+        'UF_STATUS'       => $st,
+        'UF_MESSAGES_COUNT'=> (int)$t['MESSAGES_COUNT'],
+        'UF_CREATED_AT'   => $createdAt,
     ];
 
-    $row = $lAdmin->AddRow($id, $arRes);
-    $detailUrl = 'x5_pwa_support_detail.php?lang=' . LANGUAGE_ID . '&id=' . $id;
+    $row = $lAdmin->AddRow($ticketId, $arRes);
 
-    $row->AddViewField('ID',
-        '<a href="' . htmlspecialcharsbx($detailUrl) . '" style="font-weight:600">' . $id . '</a>');
+    // Бейдж Reset UID
+    if ($isReset) {
+        $row->AddViewField('AUTH_ERROR', 
+            '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#fdf3cf;color:#8a6b00;font-size:11px;font-weight:600;" title="Запрос на сброс привязки UID">RESET</span>'
+        );
+    } else {
+        $row->AddViewField('AUTH_ERROR', '<span style="color:#aaa">—</span>');
+    }
 
-    $row->AddViewField('STATUS',
-        '<span style="display:inline-block;padding:2px 8px;border-radius:10px;'
-        . 'background:' . $badge[1] . ';color:' . $badge[2] . ';font-size:11px">'
-        . htmlspecialcharsbx($badge[0]) . '</span>');
+    $row->AddViewField('USER', $userHtml);
+    
+    $sourceLabel = ($t['SOURCE'] === 'app_unauth') ? 'Гость' : 'Авторизован';
+    $row->AddViewField('UF_SOURCE', $sourceLabel);
 
-    $row->AddViewField('SOURCE',
-        $isGuest
-            ? '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#f5a623;color:#fff;font-size:11px">Гость</span>'
-            : '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#e6f5d8;color:#3a7d1c;font-size:11px">Пользователь</span>');
+    $row->AddViewField('UF_STATUS', 
+        '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:' 
+        . $stInfo[1] . ';color:' . $stInfo[2] . ';font-size:11px">' 
+        . htmlspecialcharsbx($stInfo[0]) . '</span>');
 
-    $subjectFull  = (string)$t['SUBJECT'];
-    $subjectShort = mb_strimwidth($subjectFull, 0, 80, '…', 'UTF-8');
-    $row->AddViewField('SUBJECT',
-        '<a href="' . htmlspecialcharsbx($detailUrl) . '" title="'
-        . htmlspecialcharsbx($subjectFull) . '">'
-        . htmlspecialcharsbx($subjectShort) . '</a>');
-
-    $row->AddViewField('USER',
-        htmlspecialcharsbx($userLabel)
-        . ($userSub !== ''
-            ? '<br><span style="font-family:monospace;font-size:10px;color:#888">'
-              . htmlspecialcharsbx($userSub) . '</span>'
-            : ''));
-
-    $row->AddActions([
+    $actions = [
         [
             'ICON'    => 'view',
             'TEXT'    => 'Открыть',
             'DEFAULT' => true,
-            'LINK'    => $detailUrl,
+            'LINK'    => 'x5_pwa_support_detail.php?lang=' . LANGUAGE_ID . '&ID=' . $ticketId,
         ],
-        [
-            'ICON' => '',
-            'TEXT' => 'Закрыть',
-            'ONCLICK' => $status === SupportBuilder::ST_CLOSED
-                ? ''
-                : "x5supSingleAction(" . $id . ", 'close'); return false;",
-        ],
-        [
-            'ICON'    => 'delete',
-            'TEXT'    => 'Удалить',
-            'ONCLICK' => "x5supSingleAction(" . $id . ", 'delete'); return false;",
-        ],
-    ]);
+    ];
+
+    $row->AddActions($actions);
 }
 
 $lAdmin->AddFooter([
@@ -233,82 +251,9 @@ $lAdmin->AddFooter([
     ['counter' => true, 'title' => 'Выделено', 'value' => '0'],
 ]);
 
-$lAdmin->AddGroupActionTable([
-    'close' => [
-        'type' => 'button', 'name' => 'Закрыть', 'value' => 'close',
-        'action' => "if(confirm('Закрыть выбранные обращения?')) x5supGroupAction('close');",
-    ],
-    'delete' => [
-        'type' => 'button', 'name' => 'Удалить', 'value' => 'delete',
-        'action' => "if(confirm('Удалить обращения вместе с сообщениями и файлами?')) x5supGroupAction('delete');",
-    ],
-]);
-
 $lAdmin->CheckListMode();
 
-$exportUrl = 'x5_pwa_support_export.php?lang=' . LANGUAGE_ID . '&' . http_build_query(array_filter([
-    'USER'              => $userQuery,
-    'STATUS'            => $status,
-    'SOURCE'            => $source,
-    'CREATED_AT_from'   => $dateFrom,
-    'CREATED_AT_to'     => $dateTo,
-    'UPDATED_AT_from'   => $updFrom,
-    'UPDATED_AT_to'     => $updTo,
-    'by'                => $by,
-    'order'             => $order,
-], fn($v) => $v !== '' && $v !== null));
-
-$lAdmin->SetContextMenu([
-    ['TEXT' => 'Экспорт в CSV', 'LINK' => $exportUrl, 'ICON' => 'btn_download', 'LINK_PARAM' => ''],
-]);
-
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php';
-?>
-
-<script>
-function x5supGetForm() {
-    return document.getElementById('form_<?= \CUtil::JSEscape($sTableID) ?>')
-        || document.querySelector('form[name="form_<?= \CUtil::JSEscape($sTableID) ?>"]');
-}
-function x5supSubmitAction(action) {
-    var form = x5supGetForm();
-    if (!form) { alert('Форма не найдена'); return; }
-    var input = form.querySelector('input[name="action"]');
-    if (!input) { input = document.createElement('input'); input.type = 'hidden'; input.name = 'action'; form.appendChild(input); }
-    input.value = action;
-    var checked = form.querySelectorAll('input[name="ID[]"]:checked');
-    if (!checked.length) { alert('Выберите хотя бы одно обращение'); return; }
-    form.submit();
-}
-function x5supGroupAction(action) { x5supSubmitAction(action); }
-function x5supSingleAction(id, action) {
-    if (action === 'delete' && !confirm('Удалить обращение вместе с сообщениями и файлами? Необратимо.')) return;
-    if (action === 'close' && !confirm('Закрыть обращение?')) return;
-    var form = document.createElement('form');
-    form.method = 'POST';
-    form.action = location.pathname + '?lang=<?= LANGUAGE_ID ?>';
-    form.style.display = 'none';
-    var fields = { sessid: '<?= bitrix_sessid() ?>', action: action, single_id: id };
-    for (var k in fields) {
-        var i = document.createElement('input'); i.type = 'hidden'; i.name = k; i.value = fields[k]; form.appendChild(i);
-    }
-    document.body.appendChild(form); form.submit();
-}
-</script>
-
-<?php
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()
-    && !empty($_POST['single_id'])
-    && in_array($_POST['action'] ?? '', ['close', 'delete'], true)
-) {
-    $id = (int)$_POST['single_id'];
-    $action = (string)$_POST['action'];
-    if ($id > 0) {
-        if ($action === 'close')  \X5\Pwa\SupportBuilder::closeTicket($id, (int)$USER->GetID());
-        if ($action === 'delete') \X5\Pwa\SupportBuilder::deleteTicket($id);
-    }
-    LocalRedirect($APPLICATION->GetCurPage() . '?lang=' . LANGUAGE_ID);
-}
 
 $lAdmin->DisplayFilter($filterFields);
 $lAdmin->DisplayList();

@@ -352,4 +352,130 @@ class AnalyticsBuilder
             return false;
         }
     }
+        /**
+     * Разбивка install_accepted по полю PROPS.via:
+     *   • prompt       — установка через нативный promptInstall()
+     *   • appinstalled — установка через меню браузера (событие appinstalled)
+     *   • detected     — эвристика для iOS (isStandalone + install_gate_viewed)
+     *   • unknown      — старая версия клиента (via не передан)
+     *
+     * Считаем уникальные устройства. Дубли по одному устройству не задваивают метрику.
+     *
+     * @return array<string,int>  via => количество устройств
+     */
+    public static function getInstallByVia(string $from, string $to): array
+    {
+        $conn = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $fromSafe = $sqlHelper->forSql($from . ' 00:00:00');
+        $toSafe   = $sqlHelper->forSql($to . ' 23:59:59');
+
+        $baseWhere = "UF_SERVER_AT >= '{$fromSafe}'
+                      AND UF_SERVER_AT <= '{$toSafe}'
+                      AND UF_EVENT_NAME = 'install_accepted'";
+
+        $out = [];
+
+        try {
+            $rows = $conn->query(
+                "SELECT
+                    SUBSTRING_INDEX(SUBSTRING_INDEX(UF_PROPS, '\"via\":\"', -1), '\"', 1) AS VIA,
+                    COUNT(DISTINCT UF_DEVICE_ID) AS C
+                 FROM x5_pwa_analytics_events
+                 WHERE {$baseWhere}
+                   AND UF_PROPS LIKE '%\"via\":\"%'
+                 GROUP BY VIA
+                 ORDER BY C DESC"
+            )->fetchAll();
+
+            foreach ($rows as $r) {
+                $via = trim((string)($r['VIA'] ?? ''));
+                $cnt = (int)($r['C'] ?? 0);
+                if ($via === '' || $cnt <= 0) continue;
+                $out[$via] = $cnt;
+            }
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'getInstallByVia failed: ' . $e->getMessage(),
+                'AnalyticsBuilder::getInstallByVia',
+                '/x5.pwa.log'
+            );
+        }
+
+        // «unknown» — старый клиент без via
+        try {
+            $row = $conn->query(
+                "SELECT COUNT(DISTINCT UF_DEVICE_ID) AS C
+                 FROM x5_pwa_analytics_events
+                 WHERE {$baseWhere}
+                   AND UF_PROPS NOT LIKE '%\"via\":\"%'"
+            )->fetch();
+            $unknown = (int)($row['C'] ?? 0);
+            if ($unknown > 0) $out['unknown'] = $unknown;
+        } catch (\Throwable $e) {}
+
+        return $out;
+    }
+
+    /**
+     * Разбивка install_accepted по полю PROPS.platform (ios / android / desktop / unknown).
+     *
+     * Клиент передаёт platform в PROPS для install_prompt_shown уже давно
+     * (см. getInstallAndRegStats). Для install_accepted — с новой версии.
+     * Старые события (без platform) попадают в «unknown».
+     *
+     * @return array<string,int>  platform => количество устройств
+     */
+    public static function getInstallByPlatform(string $from, string $to): array
+    {
+        $conn = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $fromSafe = $sqlHelper->forSql($from . ' 00:00:00');
+        $toSafe   = $sqlHelper->forSql($to . ' 23:59:59');
+
+        $baseWhere = "UF_SERVER_AT >= '{$fromSafe}'
+                      AND UF_SERVER_AT <= '{$toSafe}'
+                      AND UF_EVENT_NAME = 'install_accepted'";
+
+        $out = [];
+
+        try {
+            $rows = $conn->query(
+                "SELECT
+                    SUBSTRING_INDEX(SUBSTRING_INDEX(UF_PROPS, '\"platform\":\"', -1), '\"', 1) AS PLATFORM,
+                    COUNT(DISTINCT UF_DEVICE_ID) AS C
+                 FROM x5_pwa_analytics_events
+                 WHERE {$baseWhere}
+                   AND UF_PROPS LIKE '%\"platform\":\"%'
+                 GROUP BY PLATFORM
+                 ORDER BY C DESC"
+            )->fetchAll();
+
+            foreach ($rows as $r) {
+                $platform = strtolower(trim((string)($r['PLATFORM'] ?? '')));
+                $cnt      = (int)($r['C'] ?? 0);
+                if ($platform === '' || $cnt <= 0) continue;
+                $out[$platform] = $cnt;
+            }
+        } catch (\Throwable $e) {
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'getInstallByPlatform failed: ' . $e->getMessage(),
+                'AnalyticsBuilder::getInstallByPlatform',
+                '/x5.pwa.log'
+            );
+        }
+
+        try {
+            $row = $conn->query(
+                "SELECT COUNT(DISTINCT UF_DEVICE_ID) AS C
+                 FROM x5_pwa_analytics_events
+                 WHERE {$baseWhere}
+                   AND UF_PROPS NOT LIKE '%\"platform\":\"%'"
+            )->fetch();
+            $unknown = (int)($row['C'] ?? 0);
+            if ($unknown > 0) $out['unknown'] = $unknown;
+        } catch (\Throwable $e) {}
+
+        return $out;
+    }
 }

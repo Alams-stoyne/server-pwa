@@ -48,7 +48,11 @@ class Auth
         $uidBinding     = $lookup['binding'];
         $deviceBoundUid = $lookup['deviceBoundUid'];
 
-        if ($uidBinding && $uidBinding['UF_DEVICE_ID'] !== $deviceId) {
+        if ($uidBinding && (string)$uidBinding['UF_DEVICE_ID'] === '') {
+            // Админ сбросил привязку — привязываем к текущему устройству
+            Storage::rebindDevice($uid, $deviceId);
+            $uidBinding['UF_DEVICE_ID'] = $deviceId; // обновляем локальный массив
+        } elseif ($uidBinding && $uidBinding['UF_DEVICE_ID'] !== $deviceId) {
             $rotatedRecently = $deviceRotatedAt > 0
                 && (time() * 1000 - $deviceRotatedAt) < 60_000;
             if ($rotatedRecently) {
@@ -56,6 +60,7 @@ class Auth
             }
             return ['RESULT' => 'UID_TAKEN', 'TAKEN_UID' => $uid, 'ID_USER' => null];
         }
+
         if ($deviceBoundUid && $deviceBoundUid !== $uid) {
             return ['RESULT' => 'UID_LOCKED', 'LOCKED_UID' => $deviceBoundUid, 'ID_USER' => null];
         }

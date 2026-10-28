@@ -154,6 +154,73 @@ class Storage
         $dc::update((int)$row['ID'], ['UF_LAST_SEEN_AT' => self::now()]);
     }
 
+    /**
+     * Очищает привязку UID к устройству (для сброса через поддержку).
+     * Проверяет, что текущий DEVICE_ID совпадает с ожидаемым (защита от race).
+     */
+    public static function clearDeviceBinding(string $uid, string $expectedDeviceId): bool
+    {
+        if ($uid === '' || $expectedDeviceId === '') return false;
+
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['ID', 'UF_DEVICE_ID'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+
+        if (!$row) return false;
+        if ((string)$row['UF_DEVICE_ID'] !== $expectedDeviceId) {
+            Settings::log(
+                'clearDeviceBinding: mismatch uid=' . substr($uid, 0, 12) . '… expected=' . substr($expectedDeviceId, 0, 8) . '… actual=' . substr((string)$row['UF_DEVICE_ID'], 0, 8) . '…',
+                'Storage::clearDeviceBinding'
+            );
+            return false;
+        }
+
+        $res = $dc::update((int)$row['ID'], ['UF_DEVICE_ID' => '']);
+        
+        if ($res->isSuccess()) {
+            Settings::log(
+                'clearDeviceBinding: OK uid=' . substr($uid, 0, 12) . '… device=' . substr($expectedDeviceId, 0, 8) . '…',
+                'Storage::clearDeviceBinding'
+            );
+        }
+        
+        return $res->isSuccess();
+    }
+
+    /**
+     * Привязывает новый DEVICE_ID к UID после сброса.
+     */
+    public static function rebindDevice(string $uid, string $newDeviceId): bool
+    {
+        if ($uid === '' || $newDeviceId === '') return false;
+
+        $dc  = self::dataClass('X5PwaUidBindings');
+        $row = $dc::getList([
+            'select' => ['ID'],
+            'filter' => ['=UF_UID' => $uid],
+            'limit'  => 1,
+        ])->fetch();
+
+        if (!$row) return false;
+
+        $res = $dc::update((int)$row['ID'], [
+            'UF_DEVICE_ID'    => $newDeviceId,
+            'UF_LAST_SEEN_AT' => self::now(),
+        ]);
+
+        if ($res->isSuccess()) {
+            Settings::log(
+                'rebindDevice: OK uid=' . substr($uid, 0, 12) . '… new_device=' . substr($newDeviceId, 0, 8) . '…',
+                'Storage::rebindDevice'
+            );
+        }
+
+        return $res->isSuccess();
+    }
+
     public static function blockUser(string $uid, string $reason = ''): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
@@ -182,7 +249,7 @@ class Storage
     public static function unblockUser(string $uid): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc::getList([
+        $row = $dc->getList([
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
         ])->fetch();
@@ -205,7 +272,7 @@ class Storage
     public static function isBlocked(string $uid): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc::getList([
+        $row = $dc->getList([
             'select' => ['UF_BLOCKED'],
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
@@ -217,7 +284,7 @@ class Storage
     public static function isTestAccount(string $uid): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc::getList([
+        $row = $dc->getList([
             'select' => ['UF_IS_TEST'],
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
@@ -229,7 +296,7 @@ class Storage
     public static function toggleTestAccount(string $uid, bool $isTest): bool
     {
         $dc  = self::dataClass('X5PwaUidBindings');
-        $row = $dc::getList([
+        $row = $dc->getList([
             'select' => ['ID', 'UF_WORKPLACE'],
             'filter' => ['=UF_UID' => $uid],
             'limit'  => 1,
@@ -434,10 +501,6 @@ class Storage
             $filter['!=UF_BLOCKED'] = 'Y';
         }
 
-        // PD consent filter (152-ФЗ).
-        // 'Y'     — только давшие согласие;
-        // 'N'     — только отказавшиеся;
-        // 'NOT_Y' — все остальные (N + NULL + '').
         $consent = (string)($params['consent'] ?? '');
         if ($consent === 'Y') {
             $filter['=UF_CONSENT_GRANTED'] = 'Y';
@@ -1010,7 +1073,6 @@ class Storage
         $uid    = (string)($entry['uid']    ?? '');
         $points = (int)   ($entry['points'] ?? 0);
 
-        // Жёсткая защита: пустой UID или нулевые баллы не пишем
         if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid) || $points <= 0) {
             Settings::logError(
                 'addRewardLog rejected: uid="' . substr($uid, 0, 12) . '" points=' . $points
@@ -1020,12 +1082,6 @@ class Storage
             return;
         }
 
-        // ─── PD GATE (152-ФЗ) ───
-        // Страховка к RewardsBuilder::award(): любая запись в reward_log
-        // требует UF_CONSENT_GRANTED = 'Y'. Если кто-то обойдёт guard
-        // в RewardsBuilder (например, новый tools/* скрипт или прямой
-        // вызов Storage::addRewardLog) — начисление отсекается и
-        // логируется как инцидент.
         $consent = self::getConsent($uid);
         if (empty($consent['granted'])) {
             Settings::logError(
@@ -1175,10 +1231,6 @@ class Storage
         $count = 0; foreach ($byDate as $n) { if ($n >= $timesPerDay) $count++; } return $count;
     }
 
-    /**
-     * Активные пользователи для статистики.
-     * Исключаем тестовые аккаунты (UF_IS_TEST = 'Y').
-     */
     public static function getActiveUidsForStats(): array
     {
         $conn = Application::getConnection(); $sqlHelper = $conn->getSqlHelper();
@@ -1334,9 +1386,6 @@ class Storage
         }
     }
 
-    /**
-     * Получить UID, привязанный к устройству (для проверки согласия по DEVICE_ID).
-     */
     public static function getUidByDeviceId(string $deviceId): ?string
     {
         if ($deviceId === '') return null;

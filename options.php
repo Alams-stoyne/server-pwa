@@ -37,10 +37,6 @@ if ($isPost) {
         $periodOk = false;
     }
 
-    // Валидация «оба или ни одного»: если задано только одно поле —
-    // PLANNED_END будет fallback'аться на END (зажатый к today) и
-    // клиент снова получит нестабильный контракт (баг «после полуночи пусто»).
-    // Поэтому запрещаем сохранять «наполовину заданный» период.
     if ($periodOk) {
         $startEmpty = ($periodStartRaw === '');
         $endEmpty   = ($periodEndRaw === '');
@@ -67,12 +63,12 @@ $saveFormFields = function () use ($request, $module_id): void {
         'daily_general_lecture_limit',
         'daily_charging_limit',
         'daily_task_limit',
+        'support_reset_eta_minutes',
     ];
     foreach ($fields as $f) {
         Option::set($module_id, $f, (string)$request->getPost($f));
     }
 
-    // debug_log_enabled — явная нормализация Y/N
     Option::set(
         $module_id,
         'debug_log_enabled',
@@ -98,9 +94,6 @@ $saveFormFields = function () use ($request, $module_id): void {
         Option::set($module_id, $k, (string)$v);
     }
 
-    // Лимиты: сохраняем и сравниваем старые/новые — если изменились,
-    // ставим флаг, чтобы Scheduler пересобрал дампы (config/limits_rules.json)
-    // вне очереди (без ожидания 24 часов).
     $limitsKeys = [
         'daily_theme_lecture_limit',
         'daily_general_lecture_limit',
@@ -128,6 +121,12 @@ $saveFormFields = function () use ($request, $module_id): void {
     if ($changed) {
         \X5\Pwa\Settings::markLimitsRulesDirty();
     }
+
+    // Валидация support_reset_eta_minutes
+    $eta = (int)$request->getPost('support_reset_eta_minutes');
+    if ($eta < 5) $eta = 5;
+    if ($eta > 1440) $eta = 1440;
+    Option::set($module_id, 'support_reset_eta_minutes', (string)$eta);
 };
 
 $validateVapid = function (string $pub, string $priv): ?string {
@@ -154,10 +153,6 @@ if ($isPost && $request->getPost('restore') !== null) {
 if ($isPost) $saveFormFields();
 
 if ($isPost && $periodOk) {
-    // Сравниваем со старыми значениями, чтобы поставить dumps_dirty
-    // только при реальном изменении. Это заставит Scheduler пересобрать
-    // config/period.json (и весь набор дампов) вне очереди — иначе
-    // PLANNED_* на CDN останутся старыми до 24 часов.
     $oldPeriodStart = (string)Option::get($module_id, 'stats_period_start', '');
     $oldPeriodEnd   = (string)Option::get($module_id, 'stats_period_end',   '');
 
@@ -389,6 +384,10 @@ $dailyThemeLectureLimit    = (int)Option::get($module_id, 'daily_theme_lecture_l
 $dailyGeneralLectureLimit  = (int)Option::get($module_id, 'daily_general_lecture_limit', 0);
 $dailyChargingLimit        = (int)Option::get($module_id, 'daily_charging_limit', 0);
 $dailyTaskLimit            = (int)Option::get($module_id, 'daily_task_limit', 2);
+
+$supportResetEta = (int)Option::get($module_id, 'support_reset_eta_minutes', 60);
+if ($supportResetEta < 5) $supportResetEta = 5;
+if ($supportResetEta > 1440) $supportResetEta = 1440;
 
 // Логирование
 $debugLogEnabled = $opt('debug_log_enabled') === 'Y';
@@ -831,6 +830,21 @@ $tabControl = new CAdminTabControl('tabControl', $aTabs);
     </tr>
 
     <?php $tabControl->BeginNextTab(); ?>
+
+    <tr class="heading">
+        <td colspan="2">Настройки сброса UID через поддержку</td>
+    </tr>
+    <tr>
+        <td width="40%"><label>Ожидаемое время сброса (мин):</label></td>
+        <td width="60%">
+            <input type="number" name="support_reset_eta_minutes" min="5" max="1440" step="5"
+                   value="<?= (int)$supportResetEta ?>" style="width:120px">
+            <div class="adm-info-message" style="margin-top:6px">
+                Ориентировочное время, которое показывается пользователю при запросе сброса привязки UID
+                (<code>ESTIMATED_WAIT_MINUTES</code> в ответе API). Мин. 5, макс. 1440.
+            </div>
+        </td>
+    </tr>
 
     <tr class="heading">
         <td colspan="2">Логирование в /x5.pwa.log</td>

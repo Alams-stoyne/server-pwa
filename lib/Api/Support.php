@@ -57,6 +57,30 @@ class Support
     }
 
     /**
+     * POST /support/ticket/create_reset_uid
+     * Body: { DEVICE_ID, UID, RESET_REASONS: [], TEXT, IMAGES?:[] }
+     */
+    public static function createResetUid(array $b): array
+    {
+        $deviceId = trim((string)($b['DEVICE_ID'] ?? ''));
+        $uid      = trim((string)($b['UID'] ?? ''));
+        $text     = (string)($b['TEXT'] ?? '');
+        $images   = $b['IMAGES'] ?? [];
+        $reasons  = $b['RESET_REASONS'] ?? [];
+
+        if ($deviceId === '') return ['RESULT' => 'ERROR', 'MESSAGE' => 'DEVICE_ID required'];
+        if ($uid === '')      return ['RESULT' => 'ERROR', 'MESSAGE' => 'UID required'];
+        if ($text === '')     return ['RESULT' => 'ERROR', 'MESSAGE' => 'TEXT required'];
+
+        if (!is_array($images)) $images = [];
+        if (!is_array($reasons)) {
+            $reasons = is_string($reasons) ? explode(',', $reasons) : [];
+        }
+
+        return SupportBuilder::createResetUidTicket($deviceId, $uid, $reasons, $text, $images);
+    }
+
+    /**
      * POST /support/ticket/list
      * Body: { ID_USER, STATUS?, PAGE?, PER_PAGE? }
      */

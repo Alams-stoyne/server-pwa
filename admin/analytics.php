@@ -32,6 +32,8 @@ $entryPoints      = AnalyticsBuilder::getEntryPoints($from, $to);
 $funnelBrowser    = AnalyticsBuilder::getOnboardingFunnelBySource($from, $to, 'browser');
 $funnelPwa        = AnalyticsBuilder::getOnboardingFunnelBySource($from, $to, 'pwa');
 $installStats     = AnalyticsBuilder::getInstallAndRegStats($from, $to);
+$installByVia     = AnalyticsBuilder::getInstallByVia($from, $to);
+$installByPlatform= AnalyticsBuilder::getInstallByPlatform($from, $to);
 $topScreens       = AnalyticsBuilder::getTopScreens($from, $to, 10);
 $recentErrors     = AnalyticsBuilder::getRecentErrors($from, $to, 20);
 
@@ -49,6 +51,22 @@ $stepLabels = [
     'first_action'             => 'Первое целевое действие',
 ];
 
+// Человеко-читаемые названия для install_accepted.via
+$viaLabels = [
+    'prompt'       => 'Prompt (нативный)',
+    'appinstalled' => 'Меню браузера (appinstalled)',
+    'detected'     => 'Эвристика iOS',
+    'unknown'      => 'Старый клиент (via не передан)',
+];
+
+// Человеко-читаемые названия для install_accepted.platform
+$platformLabels = [
+    'ios'     => 'iOS',
+    'android' => 'Android',
+    'desktop' => 'Desktop',
+    'unknown' => 'Не определено (старый клиент)',
+];
+
 // Рендерер одной воронки (переиспользуется для двух таблиц)
 $renderFunnel = function (array $funnel, string $title, string $color, string $hint) use ($stepLabels): string {
     if (empty($funnel)) {
@@ -59,7 +77,7 @@ $renderFunnel = function (array $funnel, string $title, string $color, string $h
             . '</div>';
     }
 
-    $base = reset($funnel) ?: 1; // первый шаг = 100%
+    $base = reset($funnel) ?: 1;
     $prev = $base;
 
     $html = '<div style="background:#fff;padding:20px;border:1px solid #e2e5e9;">';
@@ -83,6 +101,44 @@ $renderFunnel = function (array $funnel, string $title, string $color, string $h
 
         $prev = $count;
     }
+
+    $html .= '</table></div>';
+    return $html;
+};
+
+// Рендерер маленькой таблицы «установки по разрезу»
+$renderInstallBreakdown = function (array $data, string $title, array $labels, string $hint, string $color) {
+    $total = array_sum($data);
+
+    $html  = '<div style="background:#fff;padding:20px;border:1px solid #e2e5e9;">';
+    $html .= '<h3 style="color:' . $color . ';">' . htmlspecialcharsbx($title) . '</h3>';
+    $html .= '<p style="color:#666;font-size:12px;margin:0 0 12px 0;">' . htmlspecialcharsbx($hint) . '</p>';
+
+    if ($total === 0) {
+        $html .= '<div style="text-align:center;color:#888;padding:16px;">Нет данных за период</div>';
+        $html .= '</div>';
+        return $html;
+    }
+
+    $html .= '<table class="internal" style="width:100%; border-collapse:collapse;">';
+    $html .= '<tr class="heading"><td>Канал</td><td style="text-align:right">Устройств</td><td style="text-align:right">Доля</td></tr>';
+
+    foreach ($data as $key => $count) {
+        if ($count <= 0) continue;
+        $label = $labels[$key] ?? $key;
+        $share = $total > 0 ? round(($count / $total) * 100, 1) : 0;
+        $html .= '<tr>';
+        $html .= '<td>' . htmlspecialcharsbx($label) . '</td>';
+        $html .= '<td style="text-align:right; font-family:monospace; font-size:15px;">' . number_format($count) . '</td>';
+        $html .= '<td style="text-align:right; font-family:monospace;">' . $share . '%</td>';
+        $html .= '</tr>';
+    }
+
+    $html .= '<tr style="background:#f5f6f8; font-weight:600;">';
+    $html .= '<td>Итого</td>';
+    $html .= '<td style="text-align:right; font-family:monospace;">' . number_format($total) . '</td>';
+    $html .= '<td style="text-align:right; font-family:monospace;">100%</td>';
+    $html .= '</tr>';
 
     $html .= '</table></div>';
     return $html;
@@ -253,6 +309,42 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
         </table>
     </div>
 </div>
+
+<!-- ═══════════════ БЛОК 4.5: РАЗБИВКА УСТАНОВОК ═══════════════ -->
+<?php if (!empty($installByVia) || !empty($installByPlatform)): ?>
+    <?php
+    $totalVia = array_sum($installByVia);
+    $hasNewVia = isset($installByVia['appinstalled']) || isset($installByVia['detected']);
+    ?>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px; margin-top:20px;">
+        <?= $renderInstallBreakdown(
+            $installByVia,
+            'Установки: по каналу (via)',
+            $viaLabels,
+            'Как именно пользователь установил приложение. Если всё в «unknown» — клиент старой версии, не передаёт via.',
+            '#1e6bcc'
+        ) ?>
+
+        <?= $renderInstallBreakdown(
+            $installByPlatform,
+            'Установки: по платформе (platform)',
+            $platformLabels,
+            'iOS Safari не поддерживает appinstalled — там останутся только установки через prompt/эвристику. iOS в «unknown» — клиент без platform.',
+            '#3a7d1c'
+        ) ?>
+    </div>
+
+    <?php if ($totalVia > 0 && !$hasNewVia): ?>
+        <div class="adm-info-message-wrap adm-info-message-yellow" style="margin-top:16px;">
+            <div class="adm-info-message">
+                <b>Внимание:</b> в разбивке нет каналов <code>appinstalled</code> и <code>detected</code>.
+                Скорее всего, клиент ещё не задеплоен — события <code>install_accepted</code>
+                приходят только из <code>promptInstall()</code> (старая версия).
+                После деплоя фронта разбивка начнёт заполняться всеми каналами.
+            </div>
+        </div>
+    <?php endif; ?>
+<?php endif; ?>
 
 <!-- ═══════════════ БЛОК 5: ОШИБКИ ═══════════════ -->
 <div style="background:#fff;padding:20px;border:1px solid #e2e5e9;margin-top:20px;">
