@@ -11,7 +11,7 @@ class HlSetup
 {
     public static function currentVersion(): int
     {
-        return 21;
+        return 22;
     }
 
     public static function config(): array
@@ -172,6 +172,7 @@ class HlSetup
                     'UF_MODERATED_AT'   => ['datetime', []],
                     'UF_MODERATED_BY'   => ['integer', []],
                     'UF_REJECT_REASON'  => ['string', ['SIZE' => 255]],
+                    'UF_ADMIN_COMMENT'  => ['string', ['SIZE' => 2000, 'ROWS' => 5]],  // ← добавлено
                 ],
             ],
             'ConsentLog' => [

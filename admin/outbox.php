@@ -26,54 +26,60 @@ if ($request->isPost() && check_bitrix_sessid()) {
     $action = (string)$request->getPost('action');
     $batch  = max(1, min(5000, (int)($request->getPost('batch') ?: Settings::outboxBatchSize())));
 
-    try {
-        switch ($action) {
-            case 'run_all':
-                $t = Outbox::processTasks($batch);
-                $l = Outbox::processLectures($batch);
-                $h = Outbox::processHabits(min(200, $batch));
-                $r = Outbox::processReflections($batch);
-                $s = Outbox::processSteps($batch);
-                $e = Outbox::processEvents($batch);
-                $flash[] = "Запуск: tasks={$t}, lectures={$l}, habits={$h}, reflections={$r}, steps={$s}, events={$e}";
-                break;
+    // Защита от параллельного запуска (тот же лок, что и в Outbox::run)
+    $lockFile = sys_get_temp_dir() . '/x5.pwa.outbox.lock';
+    $fp = fopen($lockFile, 'c+');
+    if ($fp && flock($fp, LOCK_EX | LOCK_NB)) {
+        try {
+            switch ($action) {
+                case 'run_all':
+                    // Используем встроенный метод, который сам обновляет очередь
+                    Outbox::run();
+                    $flash[] = "Запуск Outbox::run() выполнен (результаты в логе).";
+                    break;
 
-            case 'run_tasks':
-                $n = Outbox::processTasks($batch);
-                $flash[] = "Tasks: {$n}";
-                break;
-            case 'run_lectures':
-                $n = Outbox::processLectures($batch);
-                $flash[] = "Lectures: {$n}";
-                break;
-            case 'run_habits':
-                $n = Outbox::processHabits(min(200, $batch));
-                $flash[] = "Habits: {$n}";
-                break;
-            case 'run_reflections':
-                $n = Outbox::processReflections($batch);
-                $flash[] = "Reflections: {$n}";
-                break;
-            case 'run_steps':
-                $n = Outbox::processSteps($batch);
-                $flash[] = "Steps: {$n}";
-                break;
-            case 'run_events':
-                $n = Outbox::processEvents($batch);
-                $flash[] = "Events: {$n}";
-                break;
+                case 'run_tasks':
+                    $n = Outbox::processTasks($batch);
+                    $flash[] = "Tasks: {$n}";
+                    break;
+                case 'run_lectures':
+                    $n = Outbox::processLectures($batch);
+                    $flash[] = "Lectures: {$n}";
+                    break;
+                case 'run_habits':
+                    $n = Outbox::processHabits(min(200, $batch));
+                    $flash[] = "Habits: {$n}";
+                    break;
+                case 'run_reflections':
+                    $n = Outbox::processReflections($batch);
+                    $flash[] = "Reflections: {$n}";
+                    break;
+                case 'run_steps':
+                    $n = Outbox::processSteps($batch);
+                    $flash[] = "Steps: {$n}";
+                    break;
+                case 'run_events':
+                    $n = Outbox::processEvents($batch);
+                    $flash[] = "Events: {$n}";
+                    break;
 
-            case 'reset_failed':
-                $n = Outbox::resetFailedToPending();
-                $flash[] = "failed → pending: {$n}";
-                break;
-            case 'reset_skipped':
-                $n = Outbox::resetSkippedToPending();
-                $flash[] = "skipped → pending: {$n}";
-                break;
+                case 'reset_failed':
+                    $n = Outbox::resetFailedToPending();
+                    $flash[] = "failed → pending: {$n}";
+                    break;
+                case 'reset_skipped':
+                    $n = Outbox::resetSkippedToPending();
+                    $flash[] = "skipped → pending: {$n}";
+                    break;
+            }
+        } catch (\Throwable $e) {
+            $error = $e->getMessage();
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
         }
-    } catch (\Throwable $e) {
-        $error = $e->getMessage();
+    } else {
+        $error = 'Другой процесс Outbox уже запущен. Попробуйте позже.';
     }
 }
 

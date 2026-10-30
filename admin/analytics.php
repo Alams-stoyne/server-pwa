@@ -149,9 +149,10 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_ad
 
 <!-- АЛЕРТ ОБ ОШИБКАХ В ШАПКЕ -->
 <?php if (!empty($recentErrors)): ?>
+    <?php $errCount = count($recentErrors); ?>
     <div class="adm-info-message-wrap adm-info-message-red" style="margin-bottom:20px">
         <div class="adm-info-message">
-            <b>Внимание!</b> За выбранный период зафиксировано <b><?= count($recentErrors) ?></b> JS-ошибок в приложении.
+            <b>Внимание!</b> За выбранный период зафиксировано <b><?= $errCount >= 20 ? '20+' : $errCount ?></b> JS-ошибок в приложении.
             Проверьте блок «Последние ошибки» внизу страницы.
         </div>
     </div>

@@ -14,11 +14,15 @@ class Router
 
     public static function handle(): void
     {
+        // 1. Сначала проверяем хост. Если это админка или сайт,
+        // уходим, НЕ трогая error_reporting (иначе ломается вёрстка админки на PHP 8.5).
+        if (!self::hostAllowed()) return;
+
+        // 2. Только для API отключаем вывод ошибок на экран.
         ini_set('display_errors', '0');
         ini_set('html_errors', '0');
-        error_reporting(E_ALL);
-
-        if (!self::hostAllowed()) return;
+        // error_reporting(E_ALL) убран: SetErrorHandler Битрикса смотрит на
+        // handled_errors_types из .settings.php, а не на этот параметр.
 
         $uri  = $_SERVER['REQUEST_URI'] ?? '/';
         $path = explode('?', $uri, 2)[0];
@@ -213,11 +217,36 @@ class Router
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
 
-        $json = (string)json_encode($obj, JSON_UNESCAPED_UNICODE);
-        
-        // ВАЖНО: Удалён заголовок Content-Length.
-        // Если на сервере включено сжатие (gzip), Nginx сжимает ответ,
-        // и старый Content-Length ломает соединение (ERR_CONNECTION_RESET).
+        $json = json_encode($obj, JSON_UNESCAPED_UNICODE);
+
+        if ($json === false) {
+            // Для диагностики — что именно пытались отдать и какие ключи были на верхнем уровне.
+            $keysDebug = is_array($obj)
+                ? implode(',', array_keys($obj))
+                : gettype($obj);
+
+            \Bitrix\Main\Diag\Debug::writeToFile(
+                'json_encode FAILED: ' . json_last_error_msg()
+                . "\nobj type/keys: " . $keysDebug,
+                'Router::json',
+                '/x5.pwa.log'
+            );
+
+            // Параноидальный fallback: даже если оба encode вернут false,
+            // отдаём заведомо валидную строку, чтобы клиент не получил пустоту.
+            $json = (string)json_encode(
+                [
+                    'RESULT'  => 'ERROR',
+                    'MESSAGE' => 'JSON encoding failed: ' . json_last_error_msg(),
+                ],
+                JSON_UNESCAPED_UNICODE
+            );
+            if ($json === '') {
+                $json = '{"RESULT":"ERROR","MESSAGE":"json_encode failed"}';
+            }
+        }
+
+        // ВАЖНО: Content-Length не ставим — при gzip на Nginx это рвёт соединение.
         echo $json;
         exit;
     }

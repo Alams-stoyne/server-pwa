@@ -103,38 +103,38 @@ $filterFields = [
 
 $arFilter = [];
 $lAdmin->AddFilter($filterFields, $arFilter);
-
-function x5pwaFilterValue(array $arFilter, string $field): string
-{
-    $variants = [
-        $field,
-        '?' . $field,
-        '~' . $field,
-        '~?' . $field,
-        '?' . '~' . $field,
-        'find_' . $field,
-        'find_?' . $field,
-        'find_~' . $field,
-    ];
-    foreach ($variants as $key) {
-        if (isset($arFilter[$key])) {
-            $v = $arFilter[$key];
-            if (is_array($v)) $v = reset($v);
-            $v = trim((string)$v);
-            if ($v !== '') return $v;
+if (!function_exists('x5pwaFilterValue')) {
+    function x5pwaFilterValue(array $arFilter, string $field): string
+    {
+        $variants = [
+            $field,
+            '?' . $field,
+            '~' . $field,
+            '~?' . $field,
+            '?' . '~' . $field,
+            'find_' . $field,
+            'find_?' . $field,
+            'find_~' . $field,
+        ];
+        foreach ($variants as $key) {
+            if (isset($arFilter[$key])) {
+                $v = $arFilter[$key];
+                if (is_array($v)) $v = reset($v);
+                $v = trim((string)$v);
+                if ($v !== '') return $v;
+            }
         }
-    }
-    foreach ($variants as $key) {
-        if (isset($_GET[$key])) {
-            $v = $_GET[$key];
-            if (is_array($v)) $v = reset($v);
-            $v = trim((string)$v);
-            if ($v !== '') return $v;
+        foreach ($variants as $key) {
+            if (isset($_GET[$key])) {
+                $v = $_GET[$key];
+                if (is_array($v)) $v = reset($v);
+                $v = trim((string)$v);
+                if ($v !== '') return $v;
+            }
         }
+        return '';
     }
-    return '';
 }
-
 $search      = x5pwaFilterValue($arFilter, 'SEARCH');
 $theme       = x5pwaFilterValue($arFilter, 'THEME');
 $blocked     = x5pwaFilterValue($arFilter, 'BLOCKED');

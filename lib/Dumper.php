@@ -104,7 +104,9 @@ class Dumper
             return ['ok' => false, 'error' => $e->getMessage()];
         }
 
-        $json = (string)json_encode($globalStats, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        // $json = (string)json_encode($globalStats, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        $json = self::jsonEncode($globalStats);
+
         $r    = S3::upload('stats/global.json', $json);
 
         Settings::set('last_stats_at', (string)(time() * 1000));
@@ -140,7 +142,8 @@ class Dumper
 
         $sent = 0; $failed = 0; $errors = [];
         foreach ($map as $key => $data) {
-            $json = (string)json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            // $json = (string)json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            $json = self::jsonEncode($data);
             $r = S3::upload($key, $json);
             if ($r['ok']) {
                 $sent++;
@@ -446,7 +449,8 @@ class Dumper
         $prefix = trim((string)($cfg['prefix'] ?? ''), '/');
 
         foreach ($map as $key => $data) {
-            $json = (string)json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            // $json = (string)json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            $json = self::jsonEncode($data);
             $r    = S3::upload($key, $json);
             if ($r['ok']) {
                 $sent++;
@@ -540,4 +544,22 @@ class Dumper
         }
         return $out;
     }
+
+    /**
+     * json_encode с принудительной кратчайшей формой float (PHP 7.1+).
+     * На некоторых серверах serialize_precision настроен на 17+,
+     * что даёт в JSON значения вида 3.640000000000000124344978758...
+     */
+    private static function jsonEncode($data): string
+    {
+        $old = ini_get('serialize_precision');
+        ini_set('serialize_precision', '-1');
+        try {
+            $json = (string)json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        } finally {
+            ini_set('serialize_precision', $old);
+        }
+        return $json;
+    }
+
 }

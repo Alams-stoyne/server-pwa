@@ -152,13 +152,13 @@ class StepsBuilder
             return ['RESULT' => 'DEADLINE_PASSED', 'MESSAGE' => 'Дедлайн сдачи шагов прошёл'];
         }
 
-        // 3. Rate-limit для прошлых дней (не более 3 в сутки)
+        // 3. Rate-limit для прошлых дней (не более 7 в сутки)
         if ($stepDate < $localDate) {
             $conn = Application::getConnection();
             $safeUid = $conn->getSqlHelper()->forSql($uid);
             $row = $conn->query("SELECT COUNT(*) AS C FROM x5_pwa_steps WHERE UF_UID = '{$safeUid}' AND UF_LOCAL_DATE < '{$localDate}' AND UF_SENT_AT > DATE_SUB(NOW(), INTERVAL 1 DAY)")->fetch();
-            if ((int)($row['C'] ?? 0) >= 3) {
-                return ['RESULT' => 'RATE_LIMITED', 'MESSAGE' => 'Не более 3 отправок за прошлые дни в сутки.'];
+            if ((int)($row['C'] ?? 0) >= 7) {
+                return ['RESULT' => 'RATE_LIMITED', 'MESSAGE' => 'Не более 7 отправок за прошлые дни в сутки.'];
             }
         }
 
@@ -646,20 +646,41 @@ class StepsBuilder
             GROUP BY s.UF_UID
         ")->fetchAll();
 
-        $participants = 0; $totalSteps = 0; $atGoal = 0; $aboveHalf = 0;
+        $participants = 0;
+        $totalSteps   = 0;
+
         foreach ($rows as $r) {
-            $steps = (int)$r['T']; if ($steps <= 0) continue;
-            $participants++; $totalSteps += $steps;
-            if ($steps >= self::GOAL) $atGoal++;
-            if ($steps >= (int)(self::GOAL / 2)) $aboveHalf++;
+            $steps = (int)$r['T'];
+            if ($steps <= 0) continue;
+            $participants++;
+            $totalSteps += $steps;
         }
 
-        $avgSteps = $participants > 0 ? (int)round($totalSteps / $participants) : 0;
-        $avgPercent = $participants > 0 ? round(($avgSteps / self::GOAL) * 100, 2) : 0;
+        // ─── Временно отключено ───
+        // $atGoal = 0;
+        // $aboveHalf = 0;
+        // foreach ($rows as $r) {
+        //     $steps = (int)$r['T'];
+        //     if ($steps <= 0) continue;
+        //     if ($steps >= self::GOAL)              $atGoal++;
+        //     if ($steps >= (int)(self::GOAL / 2))   $aboveHalf++;
+        // }
+        //
+        // $avgSteps   = $participants > 0 ? (int)round($totalSteps / $participants) : 0;
+        // $avgPercent = $participants > 0 ? round(($avgSteps / self::GOAL) * 100, 2) : 0;
 
-        return ['GOAL' => self::GOAL, 'TOTAL_PARTICIPANTS' => $participants, 'TOTAL_STEPS' => $totalSteps, 'AVG_STEPS' => $avgSteps, 'AVG_PROGRESS_PERCENT' => $avgPercent, 'USERS_AT_GOAL' => $atGoal, 'USERS_ABOVE_HALF' => $aboveHalf, 'UPDATED_AT' => gmdate('Y-m-d\TH:i:s\Z')];
+        return [
+            'GOAL'                 => self::GOAL,
+            'TOTAL_PARTICIPANTS'   => $participants,
+            'TOTAL_STEPS'          => $totalSteps,
+            'AVG_STEPS'            => 0,
+            'AVG_PROGRESS_PERCENT' => 0,
+            'USERS_AT_GOAL'        => 0,
+            'USERS_ABOVE_HALF'     => 0,
+            'UPDATED_AT'           => gmdate('Y-m-d\TH:i:s\Z'),
+        ];
     }
-
+    
     public static function listForAdmin(array $params = []): array
     {
         $dc = Storage::dataClass('X5PwaSteps'); $filter = [];
@@ -715,5 +736,157 @@ class StepsBuilder
     public static function getById(int $id): ?array
     {
         $dc = Storage::dataClass('X5PwaSteps'); $row = $dc::getList(['filter' => ['=ID' => $id], 'limit' => 1])->fetch(); return $row ?: null;
+    }
+
+        /**
+     * Редактирование записи шагомера из админки.
+     *
+     * Правила:
+     *   • Изменение шагов и/или локальной даты допускается только
+     *     при непустом комментарии — он сохраняется в UF_ADMIN_COMMENT
+     *     (в API/CDN НЕ отдаётся, используется только админкой).
+     *   • Смена UF_LOCAL_DATE запрещена, если у пользователя уже есть
+     *     другая запись на эту дату — чтобы не нарушать бизнес-логику
+     *     «одна отправка в день».
+     *   • После изменения пересчитывается UF_TOTAL_STEPS пользователя.
+     *   • Изменение через UF_STATUS (approve/reject) сюда не входит —
+     *     для этого есть setStatus().
+     */
+    public static function updateAdmin(
+        int $id,
+        int $newSteps,
+        string $newLocalDate,
+        string $comment,
+        int $adminId
+    ): array {
+        if ($id <= 0) {
+            return ['ok' => false, 'error' => 'Неверный ID записи.'];
+        }
+
+        $newLocalDate = trim($newLocalDate);
+        $comment      = trim($comment);
+
+        if ($newLocalDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $newLocalDate)) {
+            return ['ok' => false, 'error' => 'Дата должна быть в формате YYYY-MM-DD.'];
+        }
+        $ts = strtotime($newLocalDate);
+        if ($ts === false) {
+            return ['ok' => false, 'error' => 'Невалидная дата.'];
+        }
+
+        if ($newSteps < 0) {
+            return ['ok' => false, 'error' => 'Шаги не могут быть отрицательными.'];
+        }
+        if ($newSteps > self::MAX_STEPS) {
+            return [
+                'ok'    => false,
+                'error' => 'Максимум ' . number_format(self::MAX_STEPS, 0, '', ' ') . ' шагов.',
+            ];
+        }
+
+        $dc = Storage::dataClass('X5PwaSteps');
+        $row = $dc::getList([
+            'filter' => ['=ID' => $id],
+            'limit'  => 1,
+        ])->fetch();
+
+        if (!$row) {
+            return ['ok' => false, 'error' => 'Запись не найдена.'];
+        }
+
+        $oldSteps = (int)($row['UF_STEPS'] ?? 0);
+        $oldDate  = (string)($row['UF_LOCAL_DATE'] ?? '');
+        $uid      = (string)($row['UF_UID'] ?? '');
+        $oldCmt   = (string)($row['UF_ADMIN_COMMENT'] ?? '');
+
+        $stepsChanged = ($oldSteps !== $newSteps);
+        $dateChanged  = ($oldDate  !== $newLocalDate);
+
+        if (!$stepsChanged && !$dateChanged) {
+            return ['ok' => true, 'no_changes' => true, 'message' => 'Изменений нет.'];
+        }
+
+        if ($comment === '') {
+            return [
+                'ok'    => false,
+                'error' => 'Комментарий обязателен при изменении шагов или даты.',
+            ];
+        }
+
+        // ─── Проверка дубликата при смене даты ───
+        if ($dateChanged) {
+            $existing = $dc::getList([
+                'select' => ['ID', 'UF_STEPS', 'UF_STATUS'],
+                'filter' => [
+                    '=UF_UID'        => $uid,
+                    '=UF_LOCAL_DATE' => $newLocalDate,
+                    '!=ID'           => $id,
+                ],
+                'limit' => 1,
+            ])->fetch();
+
+            if ($existing) {
+                return [
+                    'ok'    => false,
+                    'error' => sprintf(
+                        'На %s уже есть запись #%d (шагов: %d, статус: %s). '
+                        . 'Сначала измените или удалите её.',
+                        $newLocalDate,
+                        (int)$existing['ID'],
+                        (int)$existing['UF_STEPS'],
+                        (string)$existing['UF_STATUS']
+                    ),
+                ];
+            }
+        }
+
+        // ─── Формируем строку истории ───
+        $parts = [];
+        if ($stepsChanged) $parts[] = "шаги {$oldSteps}→{$newSteps}";
+        if ($dateChanged)  $parts[] = "дата {$oldDate}→{$newLocalDate}";
+
+        $stamp = '[' . date('d.m.Y H:i:s') . " admin#{$adminId}] "
+               . implode('; ', $parts) . '. Причина: ' . $comment;
+
+        $newComment = ($oldCmt === '') ? $stamp : ($oldCmt . "\n" . $stamp);
+        if (mb_strlen($newComment) > 2000) {
+            // Оставляем последние 2000 символов — свежие правки важнее.
+            $newComment = mb_substr($newComment, -2000);
+        }
+
+        $res = $dc::update($id, [
+            'UF_STEPS'         => $newSteps,
+            'UF_LOCAL_DATE'    => $newLocalDate,
+            'UF_ADMIN_COMMENT' => $newComment,
+        ]);
+
+        if (!$res->isSuccess()) {
+            return [
+                'ok'    => false,
+                'error' => 'DB error: ' . implode('; ', $res->getErrorMessages()),
+            ];
+        }
+
+        // ─── Пересчёт UF_TOTAL_STEPS ───
+        try {
+            self::recalcUserTotal($uid);
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'recalcUserTotal after admin update failed uid=' . substr($uid, 0, 12)
+                . '… id=' . $id . ': ' . $e->getMessage(),
+                'StepsBuilder::updateAdmin'
+            );
+        }
+
+        Settings::log(sprintf(
+            'admin#%d updated step #%d uid=%s: %s. Причина: %s',
+            $adminId,
+            $id,
+            substr($uid, 0, 12) . '…',
+            implode('; ', $parts),
+            $comment
+        ), 'StepsBuilder::updateAdmin');
+
+        return ['ok' => true, 'no_changes' => false, 'message' => 'Изменения сохранены.'];
     }
 }

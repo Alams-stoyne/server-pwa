@@ -26,11 +26,22 @@ class Storage
         if (!$hl) throw new \RuntimeException("HL '{$hlName}' not found");
 
         $entity = HighloadBlockTable::compileEntity($hl);
-        $dataClass = $entity->getDataClass();
+        
+        // ─── Защита от изменений в ядре (PHP 8.5 / Bitrix 26.x) ───
+        // В некоторых версиях compileEntity может вернуть строку (FQN класса),
+        // а не объект Entity.
+        if (is_string($entity)) {
+            $dataClass = $entity;
+        } else {
+            $dataClass = $entity->getDataClass();
+        }
 
-        // Защита для разных версий Bitrix
         if (is_object($dataClass)) {
             $dataClass = get_class($dataClass);
+        }
+        
+        if (!is_string($dataClass) || $dataClass === '') {
+            throw new \RuntimeException("HL '{$hlName}' compileEntity returned invalid data class");
         }
 
         return self::$dataClasses[$hlName] = $dataClass;
@@ -677,6 +688,15 @@ class Storage
 
     public static function saveState(string $uid, $state): void
     {
+        // ─── Защита: UID должен быть 40 hex-символов (защита от SQLi и мусора) ───
+        if ($uid === '' || !preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+            Settings::logError(
+                'saveState rejected: invalid uid="' . substr($uid, 0, 20) . '"',
+                'Storage::saveState'
+            );
+            return;
+        }
+
         if (is_array($state)) { unset($state['CONSENT'], $state['HABIT_SELECTED'], $state['REWARDS']); }
         $dc = self::dataClass('X5PwaUserStates');
         $existing = $dc::getList(['filter' => ['=UF_UID' => $uid], 'limit' => 1])->fetch();

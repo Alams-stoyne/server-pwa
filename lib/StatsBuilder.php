@@ -379,6 +379,39 @@ class StatsBuilder
         [$from, $to] = self::getEffectivePeriod();
         $today = date('Y-m-d');
 
+        // ── Общие счётчики по всем bindings (без фильтра активности).
+        //    TOTAL_REGISTERED   — всего записей в bindings (устройств/аккаунтов),
+        //                         включая без согласия / без темы / заблокированных.
+        //    TOTAL_PARTICIPANTS — реально в марафоне: consent = 'Y' + theme != '',
+        //                         не заблокированы, не тестовые.
+        //    TOTAL_USERS (ниже) — «активны сегодня»: подмножество PARTICIPANTS,
+        //                         у кого была активность за 24 часа
+        //                         (см. Storage::getActiveUidsForStats()).
+        //
+        //    Инвариант: REGISTERED >= PARTICIPANTS >= USERS.
+        //    Если PARTICIPANTS < USERS — что-то сломалось, пишем в лог.
+        $totalRegistered   = 0;
+        $totalParticipants = 0;
+        try {
+            $totalsRow = Application::getConnection()->query(
+                "SELECT
+                    COUNT(*) AS REGISTERED,
+                    SUM(CASE WHEN UF_CONSENT_GRANTED = 'Y'
+                              AND UF_THEME IS NOT NULL AND UF_THEME != ''
+                              AND (UF_BLOCKED IS NULL OR UF_BLOCKED = 'N')
+                              AND (UF_IS_TEST IS NULL OR UF_IS_TEST != 'Y')
+                         THEN 1 ELSE 0 END) AS PARTICIPANTS
+                 FROM x5_pwa_uid_bindings"
+            )->fetch();
+            $totalRegistered   = (int)($totalsRow['REGISTERED']   ?? 0);
+            $totalParticipants = (int)($totalsRow['PARTICIPANTS'] ?? 0);
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'buildGlobal totals failed: ' . $e->getMessage(),
+                'StatsBuilder::buildGlobal'
+            );
+        }
+
         $wpMap = WorkplacesBuilder::getMap();
         $wpAgg = [];
         foreach ($wpMap as $code => $_) {
@@ -490,6 +523,14 @@ class StatsBuilder
             }
         }
 
+        // Sanity: все активные сегодня должны быть среди участников.
+        if ($totalParticipants > 0 && $totalUsers > $totalParticipants) {
+            Settings::logError(
+                "buildGlobal: SANITY WARN totalUsers={$totalUsers} > totalParticipants={$totalParticipants}",
+                'StatsBuilder::buildGlobal'
+            );
+        }
+
         $totalStats = Storage::getStatsForUids($uids);
         foreach ($totalStats as $ts) {
             $lecturesTotal += (int)$ts['lectures'];
@@ -563,7 +604,15 @@ class StatsBuilder
                 'STEPS_CONFIRMED_TOTAL' => $stepsConfirmedTotal,
 
                 'TOTAL_APPLES'    => $totalApples,
-                'TOTAL_USERS'     => $totalUsers,
+
+                // ── Метрики шапки админки ──
+                // TOTAL_REGISTERED   — все записи в bindings (охват).
+                // TOTAL_PARTICIPANTS — участники марафона (consent + theme, без блока/теста).
+                // TOTAL_USERS        — активны сегодня (подмножество PARTICIPANTS).
+                'TOTAL_REGISTERED'   => $totalRegistered,
+                'TOTAL_PARTICIPANTS' => $totalParticipants,
+                'TOTAL_USERS'        => $totalUsers,
+
                 'EARNED_TOTAL'    => $totalEarned,
                 'MAX_TOTAL'       => $totalMax,
                 'MISSING_TOTAL'   => $totalMissing,

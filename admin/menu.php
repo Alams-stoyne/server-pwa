@@ -28,7 +28,7 @@ return [
             [
                 'text'     => 'Шагомер',
                 'url'      => 'x5_pwa_steps.php?lang=' . LANGUAGE_ID,
-                'more_url' => ['x5_pwa_steps_leaderboard.php'],
+                'more_url' => ['x5_pwa_steps_leaderboard.php', 'x5_pwa_step_detail.php'],
                 'icon'     => 'update_menu_icon',
             ],
             [
@@ -53,14 +53,15 @@ return [
                 'icon' => 'statistic_menu_icon',
             ],
             [
-                'text' => 'Аналитика воронки', // <── ДОБАВЛЕНО
+                'text' => 'Аналитика воронки',
                 'url'  => 'x5_pwa_analytics.php?lang=' . LANGUAGE_ID,
                 'icon' => 'statistic_menu_icon',
             ],
             [
-                'text' => 'Общая статистика',
-                'url'  => 'x5_pwa_stats.php?lang=' . LANGUAGE_ID,
-                'icon' => 'statistic_menu_icon',
+                'text'     => 'Общая статистика',
+                'url'      => 'x5_pwa_stats.php?lang=' . LANGUAGE_ID,
+                'more_url' => ['x5_pwa_daily_apples.php'],
+                'icon'     => 'statistic_menu_icon',
             ],
             [
                 'text' => 'Максимум яблок по дням',

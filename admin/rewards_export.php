@@ -1,6 +1,6 @@
 <?php
 /**
- * Экспорт истории наград в CSV.
+ * Экспорт истории наград в CSV (итеративная выборка).
  */
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
@@ -53,10 +53,10 @@ $sortMap = [
 $sortKey = $sortMap[$by] ?? 'UF_CREATED_AT';
 $sortDir = strtoupper($order) === 'ASC' ? 'ASC' : 'DESC';
 
-$rows = $dc::getList([
+$res = $dc::getList([
     'filter' => $filter,
     'order'  => [$sortKey => $sortDir, 'ID' => 'DESC'],
-])->fetchAll();
+]);
 
 $filename = 'rewards_' . date('Ymd_His') . '.csv';
 
@@ -71,7 +71,7 @@ fputcsv($out, [
     'ID', 'UID', 'Тип', 'Действие (ID)', 'Заголовок', 'Дата (локальная)', 'Баллы', 'Начислено',
 ], ';');
 
-foreach ($rows as $r) {
+while ($r = $res->fetch()) {
     fputcsv($out, [
         (int)($r['ID'] ?? 0),
         (string)($r['UF_UID'] ?? ''),

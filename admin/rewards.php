@@ -1,8 +1,4 @@
 <?php
-/**
- * PWA — История наград (все пользователи).
- */
-
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
 
 use Bitrix\Main\Loader;
@@ -42,52 +38,59 @@ $lAdmin->AddFilter($filterFields, $arFilter);
 
 function x5rwFilterValue(array $arFilter, string $field): string
 {
-    $variants = [$field, '?' . $field, '~' . $field, '~?' . $field, '?' . '~' . $field, 'find_' . $field, 'find_?' . $field, 'find_~' . $field];
+    $variants = [$field, '?' . $field, '~' . $field, '~?' . $field, '?' . '~' . $field,
+        'find_' . $field, 'find_?' . $field, 'find_~' . $field];
     foreach ($variants as $key) {
         if (isset($arFilter[$key])) {
-            $v = $arFilter[$key]; if (is_array($v)) $v = reset($v);
-            $v = trim((string)$v); if ($v !== '') return $v;
+            $v = $arFilter[$key];
+            if (is_array($v)) $v = reset($v);
+            $v = trim((string)$v);
+            if ($v !== '') return $v;
         }
     }
     foreach ($variants as $key) {
-        if (isset($_GET[$key])) {
-            $v = $_GET[$key]; if (is_array($v)) $v = reset($v);
-            $v = trim((string)$v); if ($v !== '') return $v;
+        if (isset($_REQUEST[$key])) {
+            $v = $_REQUEST[$key];
+            if (is_array($v)) $v = reset($v);
+            $v = trim((string)$v);
+            if ($v !== '') return $v;
         }
     }
     return '';
 }
 
-$uidQuery  = x5rwFilterValue($arFilter, 'UID');
-// Fallback: если AddFilter не применил фильтр (нет apply_filter=Y или передан UID без префикса),
-// читаем UID напрямую из запроса.
-if ($uidQuery === '') {
-    foreach (['find_UID', '~UID', '?UID', 'UID'] as $k) {
-        $v = trim((string)($_REQUEST[$k] ?? ''));
-        if ($v !== '') { $uidQuery = $v; break; }
-    }
+$uidQuery = x5rwFilterValue($arFilter, 'UID');
+// Спец. параметр — гарантированно работает при переходах из user_detail.php
+if ($uidQuery === '' && !empty($_REQUEST['x5uid'])) {
+    $uidQuery = trim((string)$_REQUEST['x5uid']);
+}
+if ($uidQuery !== '' && !preg_match('/^[a-f0-9]{40}$/i', $uidQuery)) {
+    $uidQuery = '';
 }
 
-$type      = x5rwFilterValue($arFilter, 'TYPE');
-$dateFrom  = x5rwFilterValue($arFilter, 'LOCAL_DATE_from');
-$dateTo    = x5rwFilterValue($arFilter, 'LOCAL_DATE_to');
+$type = x5rwFilterValue($arFilter, 'TYPE');
+if (!in_array($type, RewardsBuilder::ALL_TYPES, true)) $type = '';
+
+$dateFrom    = x5rwFilterValue($arFilter, 'LOCAL_DATE_from');
+$dateTo      = x5rwFilterValue($arFilter, 'LOCAL_DATE_to');
 $createdFrom = x5rwFilterValue($arFilter, 'CREATED_AT_from');
 $createdTo   = x5rwFilterValue($arFilter, 'CREATED_AT_to');
 
-$page    = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
-$perPage = 50;
+$page = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
 
-// ── Построение фильтра и выборки
+$perPageDefault = 50;
+$perPage = (int)($_REQUEST['SIZEN_1'] ?? $_REQUEST['SIZEN'] ?? 0);
+if ($perPage <= 0) {
+    try { $perPage = (int)$lAdmin->GetNavSize(); } catch (\Throwable $e) { $perPage = 0; }
+}
+if ($perPage <= 0) $perPage = $perPageDefault;
+if ($perPage > 500) $perPage = 500;
+
 $dc = \X5\Pwa\Storage::dataClass('X5PwaRewardLog');
 
 $filter = [];
-
-if ($uidQuery !== '') {
-    $filter['%UF_UID'] = '%' . $uidQuery . '%';
-}
-if ($type !== '' && in_array($type, RewardsBuilder::ALL_TYPES, true)) {
-    $filter['=UF_ACTION_TYPE'] = $type;
-}
+if ($uidQuery !== '') $filter['%UF_UID'] = '%' . $uidQuery . '%';
+if ($type !== '')     $filter['=UF_ACTION_TYPE'] = $type;
 if ($dateFrom !== '') $filter['>=UF_LOCAL_DATE'] = $dateFrom;
 if ($dateTo   !== '') $filter['<=UF_LOCAL_DATE'] = $dateTo;
 if ($createdFrom !== '') {
@@ -98,41 +101,30 @@ if ($createdTo !== '') {
 }
 
 $sortMap = [
-    'ID'            => 'ID',
-    'UF_UID'        => 'UF_UID',
-    'UF_ACTION_TYPE'=> 'UF_ACTION_TYPE',
-    'UF_POINTS'     => 'UF_POINTS',
-    'UF_LOCAL_DATE' => 'UF_LOCAL_DATE',
-    'UF_CREATED_AT' => 'UF_CREATED_AT',
+    'ID' => 'ID', 'UF_UID' => 'UF_UID', 'UF_ACTION_TYPE' => 'UF_ACTION_TYPE',
+    'UF_POINTS' => 'UF_POINTS', 'UF_LOCAL_DATE' => 'UF_LOCAL_DATE', 'UF_CREATED_AT' => 'UF_CREATED_AT',
 ];
 $sortKey = $sortMap[$by] ?? 'UF_CREATED_AT';
 $sortDir = $order === 'ASC' ? 'ASC' : 'DESC';
 $orderBy = [$sortKey => $sortDir, 'ID' => 'DESC'];
 
 $totalRow = $dc::getList([
-    'select'  => ['CNT'],
-    'filter'  => $filter,
+    'select' => ['CNT'], 'filter' => $filter,
     'runtime' => [new \Bitrix\Main\Entity\ExpressionField('CNT', 'COUNT(*)')],
 ])->fetch();
 $total = (int)($totalRow['CNT'] ?? 0);
 
 $rows = $dc::getList([
-    'filter' => $filter,
-    'order'  => $orderBy,
-    'limit'  => $perPage,
-    'offset' => ($page - 1) * $perPage,
+    'filter' => $filter, 'order' => $orderBy,
+    'limit' => $perPage, 'offset' => ($page - 1) * $perPage,
 ])->fetchAll();
 
-// Подтянем ники/ФИО
 $uids = array_values(array_unique(array_column($rows, 'UF_UID')));
 $users = [];
 if ($uids) {
     try {
         $bdc = \X5\Pwa\Storage::dataClass('X5PwaUidBindings');
-        $brs = $bdc::getList([
-            'select' => ['UF_UID', 'UF_NICKNAME', 'UF_FIO'],
-            'filter' => ['=UF_UID' => $uids],
-        ])->fetchAll();
+        $brs = $bdc::getList(['select' => ['UF_UID', 'UF_NICKNAME', 'UF_FIO'], 'filter' => ['=UF_UID' => $uids]])->fetchAll();
         foreach ($brs as $b) $users[$b['UF_UID']] = $b;
     } catch (\Throwable $e) {}
 }
@@ -167,26 +159,20 @@ foreach ($rows as $r) {
     if ($userLabel === '') $userLabel = trim((string)($user['UF_FIO'] ?? ''));
     if ($userLabel === '') $userLabel = substr($uid, 0, 10) . '…';
 
-    $created = !empty($r['UF_CREATED_AT'])
-        ? $r['UF_CREATED_AT']->format('d.m.Y H:i:s')
-        : '—';
-
+    $created = !empty($r['UF_CREATED_AT']) ? $r['UF_CREATED_AT']->format('d.m.Y H:i:s') : '—';
     $typeTitle = RewardsBuilder::typeTitle((string)($r['UF_ACTION_TYPE'] ?? ''));
 
     $arRes = [
-        'ID'             => (int)$r['ID'],
-        'UF_CREATED_AT'  => $created,
-        'UF_UID'         => $uid,
+        'ID' => (int)$r['ID'], 'UF_CREATED_AT' => $created, 'UF_UID' => $uid,
         'UF_ACTION_TYPE' => (string)($r['UF_ACTION_TYPE'] ?? ''),
-        'UF_TITLE'       => (string)($r['UF_TITLE'] ?? ''),
-        'UF_LOCAL_DATE'  => (string)($r['UF_LOCAL_DATE'] ?? ''),
-        'UF_POINTS'      => (int)($r['UF_POINTS'] ?? 0),
+        'UF_TITLE' => (string)($r['UF_TITLE'] ?? ''),
+        'UF_LOCAL_DATE' => (string)($r['UF_LOCAL_DATE'] ?? ''),
+        'UF_POINTS' => (int)($r['UF_POINTS'] ?? 0),
     ];
 
     $row = $lAdmin->AddRow((int)$r['ID'], $arRes);
 
-    $row->AddViewField('UF_UID',
-        htmlspecialcharsbx($userLabel)
+    $row->AddViewField('UF_UID', htmlspecialcharsbx($userLabel)
         . '<br><span style="font-family:monospace;font-size:10px;color:#888">'
         . htmlspecialcharsbx(substr($uid, 0, 16)) . '…</span>');
 
@@ -194,17 +180,12 @@ foreach ($rows as $r) {
         '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#e0efff;color:#1e6bcc;font-size:11px">'
         . htmlspecialcharsbx($typeTitle) . '</span>');
 
-    $row->AddViewField('UF_POINTS',
-        '<b style="color:#3a7d1c">+' . (int)$r['UF_POINTS'] . '</b>');
+    $row->AddViewField('UF_POINTS', '<b style="color:#3a7d1c">+' . (int)$r['UF_POINTS'] . '</b>');
 
-    $row->AddActions([
-        [
-            'ICON'    => 'view',
-            'TEXT'    => 'К пользователю',
-            'DEFAULT' => true,
-            'LINK'    => 'x5_pwa_user_detail.php?lang=' . LANGUAGE_ID . '&uid=' . urlencode($uid),
-        ],
-    ]);
+    $row->AddActions([[
+        'ICON' => 'view', 'TEXT' => 'К пользователю', 'DEFAULT' => true,
+        'LINK' => 'x5_pwa_user_detail.php?lang=' . LANGUAGE_ID . '&uid=' . urlencode($uid),
+    ]]);
 }
 
 $lAdmin->AddFooter([
@@ -215,14 +196,10 @@ $lAdmin->AddFooter([
 $lAdmin->CheckListMode();
 
 $exportUrl = 'x5_pwa_rewards_export.php?lang=' . LANGUAGE_ID . '&' . http_build_query(array_filter([
-    'UID'              => $uidQuery,
-    'TYPE'             => $type,
-    'LOCAL_DATE_from'  => $dateFrom,
-    'LOCAL_DATE_to'    => $dateTo,
-    'CREATED_AT_from'  => $createdFrom,
-    'CREATED_AT_to'    => $createdTo,
-    'by'               => $by,
-    'order'            => $order,
+    'UID' => $uidQuery, 'TYPE' => $type,
+    'LOCAL_DATE_from' => $dateFrom, 'LOCAL_DATE_to' => $dateTo,
+    'CREATED_AT_from' => $createdFrom, 'CREATED_AT_to' => $createdTo,
+    'by' => $by, 'order' => $order,
 ], fn($v) => $v !== '' && $v !== null));
 
 $lAdmin->SetContextMenu([

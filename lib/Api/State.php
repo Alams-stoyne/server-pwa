@@ -12,6 +12,13 @@ class State
             return ['RESULT' => 'ERROR', 'MESSAGE' => 'UID required'];
         }
 
+        // ─── Валидация UID: 40 hex-символов ───
+        // Без неё любой бот может писать в HL-блок произвольные строки
+        // (SQL-инъекции, мусор, ID других пользователей).
+        if (!preg_match('/^[a-f0-9]{40}$/i', $uid)) {
+            return ['RESULT' => 'ERROR', 'MESSAGE' => 'Invalid UID format'];
+        }
+
         try {
             Storage::saveState($uid, $b['STATE'] ?? null);
         } catch (\Throwable $e) {

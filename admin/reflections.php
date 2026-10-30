@@ -70,7 +70,6 @@ $arFilter = [];
 $lAdmin->AddFilter($filterFields, $arFilter);
 
 // Универсальная читалка фильтра — та же, что в users.php.
-// Если users.php уже объявил эту функцию, переиспользуем её.
 if (!function_exists('x5pwaFilterValue')) {
     function x5pwaFilterValue(array $arFilter, string $field): string
     {
@@ -182,8 +181,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
 // ─────────────────────────────────────────────────────────
 // Пагинация + данные
 // ─────────────────────────────────────────────────────────
-$page    = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
-$perPage = 50;
+$page = max(1, (int)($_REQUEST['page'] ?? $_REQUEST['PAGEN_1'] ?? 1));
+
+$perPageDefault = 50;
+$perPage = (int)($_REQUEST['SIZEN_1'] ?? $_REQUEST['SIZEN'] ?? 0);
+if ($perPage <= 0) {
+    try {
+        $perPage = (int)$lAdmin->GetNavSize();
+    } catch (\Throwable $e) {
+        $perPage = 0;
+    }
+}
+if ($perPage <= 0) $perPage = $perPageDefault;
+if ($perPage > 500) $perPage = 500;
 
 $params = [
     'search'    => $search,
