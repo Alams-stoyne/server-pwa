@@ -1,8 +1,10 @@
 <?php
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_before.php';
 
+use Bitrix\Main\Application;
 use Bitrix\Main\Loader;
 use X5\Pwa\RewardsBuilder;
+use X5\Pwa\Storage;
 
 $moduleId     = 'x5.pwa';
 $MODULE_RIGHT = $APPLICATION->GetGroupRight($moduleId);
@@ -21,7 +23,7 @@ $order    = mb_strtoupper($oSort->getOrder());
 $lAdmin = new CAdminUiList($sTableID, $oSort);
 
 $filterFields = [
-    ['id' => 'UID',        'name' => 'UID (частично)', 'type' => 'string', 'filterable' => '?', 'quickSearch' => '?', 'default' => true],
+    ['id' => 'SEARCH',     'name' => 'Поиск (UID, ФИО, ник, компания)', 'type' => 'string', 'filterable' => '?', 'quickSearch' => '?', 'default' => true],
     ['id' => 'TYPE',       'name' => 'Тип действия', 'type' => 'list', 'items' => array_merge(
         ['' => '— любой —'],
         array_combine(RewardsBuilder::ALL_TYPES, array_map(
@@ -59,13 +61,16 @@ function x5rwFilterValue(array $arFilter, string $field): string
     return '';
 }
 
-$uidQuery = x5rwFilterValue($arFilter, 'UID');
-// Спец. параметр — гарантированно работает при переходах из user_detail.php
-if ($uidQuery === '' && !empty($_REQUEST['x5uid'])) {
-    $uidQuery = trim((string)$_REQUEST['x5uid']);
+$search = x5rwFilterValue($arFilter, 'SEARCH');
+
+// ─── Fallback: старые ссылки из user_detail.php ───
+if ($search === '' && !empty($_REQUEST['x5uid'])) {
+    $candidate = trim((string)$_REQUEST['x5uid']);
+    if ($candidate !== '') $search = $candidate;
 }
-if ($uidQuery !== '' && !preg_match('/^[a-f0-9]{40}$/i', $uidQuery)) {
-    $uidQuery = '';
+if ($search === '' && !empty($_REQUEST['UID'])) {
+    $candidate = trim((string)$_REQUEST['UID']);
+    if ($candidate !== '') $search = $candidate;
 }
 
 $type = x5rwFilterValue($arFilter, 'TYPE');
@@ -86,51 +91,100 @@ if ($perPage <= 0) {
 if ($perPage <= 0) $perPage = $perPageDefault;
 if ($perPage > 500) $perPage = 500;
 
-$dc = \X5\Pwa\Storage::dataClass('X5PwaRewardLog');
+/**
+ * Резолвит UID'ы из x5_pwa_uid_bindings по подстроке:
+ * UF_UID / UF_FIO / UF_NICKNAME / UF_WORKPLACE — как в users.php.
+ */
+function x5rwResolveUidsBySearch(string $query, int $limit = 5000): array
+{
+    $query = trim($query);
+    if ($query === '') return [];
 
-$filter = [];
-if ($uidQuery !== '') $filter['%UF_UID'] = '%' . $uidQuery . '%';
-if ($type !== '')     $filter['=UF_ACTION_TYPE'] = $type;
-if ($dateFrom !== '') $filter['>=UF_LOCAL_DATE'] = $dateFrom;
-if ($dateTo   !== '') $filter['<=UF_LOCAL_DATE'] = $dateTo;
-if ($createdFrom !== '') {
-    try { $filter['>=UF_CREATED_AT'] = new \Bitrix\Main\Type\DateTime($createdFrom . ' 00:00:00'); } catch (\Throwable $e) {}
+    try {
+        $conn      = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $like      = "'%" . $sqlHelper->forSql($query) . "%'";
+
+        $rows = $conn->query(
+            "SELECT UF_UID FROM x5_pwa_uid_bindings
+             WHERE UF_UID LIKE {$like}
+                OR UF_FIO LIKE {$like}
+                OR UF_NICKNAME LIKE {$like}
+                OR UF_WORKPLACE LIKE {$like}
+             LIMIT " . (int)$limit
+        )->fetchAll();
+
+        return array_map(fn($r) => (string)$r['UF_UID'], $rows);
+    } catch (\Throwable $e) {
+        \X5\Pwa\Settings::logError(
+            'rewards resolveUids failed query="' . mb_substr($query, 0, 60)
+            . '": ' . $e->getMessage(),
+            'rewards.php'
+        );
+        return [];
+    }
 }
-if ($createdTo !== '') {
-    try { $filter['<=UF_CREATED_AT'] = new \Bitrix\Main\Type\DateTime($createdTo . ' 23:59:59'); } catch (\Throwable $e) {}
+
+$dc = Storage::dataClass('X5PwaRewardLog');
+
+$resolvedUids = null; // null = фильтр по UID не задан
+if ($search !== '') {
+    $resolvedUids = x5rwResolveUidsBySearch($search);
+
+    // Ничего не нашли — пустой результат, не тянуть всю таблицу.
+    if (empty($resolvedUids)) {
+        $rows = [];
+        $total = 0;
+        $dbRes = new CDBResult();
+        $dbRes->InitFromArray([]);
+    }
 }
 
-$sortMap = [
-    'ID' => 'ID', 'UF_UID' => 'UF_UID', 'UF_ACTION_TYPE' => 'UF_ACTION_TYPE',
-    'UF_POINTS' => 'UF_POINTS', 'UF_LOCAL_DATE' => 'UF_LOCAL_DATE', 'UF_CREATED_AT' => 'UF_CREATED_AT',
-];
-$sortKey = $sortMap[$by] ?? 'UF_CREATED_AT';
-$sortDir = $order === 'ASC' ? 'ASC' : 'DESC';
-$orderBy = [$sortKey => $sortDir, 'ID' => 'DESC'];
+if (!isset($rows)) {
+    $filter = [];
+    if ($resolvedUids !== null) $filter['=UF_UID'] = $resolvedUids;
+    if ($type !== '')     $filter['=UF_ACTION_TYPE'] = $type;
+    if ($dateFrom !== '') $filter['>=UF_LOCAL_DATE'] = $dateFrom;
+    if ($dateTo   !== '') $filter['<=UF_LOCAL_DATE'] = $dateTo;
+    if ($createdFrom !== '') {
+        try { $filter['>=UF_CREATED_AT'] = new \Bitrix\Main\Type\DateTime($createdFrom . ' 00:00:00'); } catch (\Throwable $e) {}
+    }
+    if ($createdTo !== '') {
+        try { $filter['<=UF_CREATED_AT'] = new \Bitrix\Main\Type\DateTime($createdTo . ' 23:59:59'); } catch (\Throwable $e) {}
+    }
 
-$totalRow = $dc::getList([
-    'select' => ['CNT'], 'filter' => $filter,
-    'runtime' => [new \Bitrix\Main\Entity\ExpressionField('CNT', 'COUNT(*)')],
-])->fetch();
-$total = (int)($totalRow['CNT'] ?? 0);
+    $sortMap = [
+        'ID' => 'ID', 'UF_UID' => 'UF_UID', 'UF_ACTION_TYPE' => 'UF_ACTION_TYPE',
+        'UF_POINTS' => 'UF_POINTS', 'UF_LOCAL_DATE' => 'UF_LOCAL_DATE', 'UF_CREATED_AT' => 'UF_CREATED_AT',
+    ];
+    $sortKey = $sortMap[$by] ?? 'UF_CREATED_AT';
+    $sortDir = $order === 'ASC' ? 'ASC' : 'DESC';
+    $orderBy = [$sortKey => $sortDir, 'ID' => 'DESC'];
 
-$rows = $dc::getList([
-    'filter' => $filter, 'order' => $orderBy,
-    'limit' => $perPage, 'offset' => ($page - 1) * $perPage,
-])->fetchAll();
+    $totalRow = $dc::getList([
+        'select' => ['CNT'], 'filter' => $filter,
+        'runtime' => [new \Bitrix\Main\Entity\ExpressionField('CNT', 'COUNT(*)')],
+    ])->fetch();
+    $total = (int)($totalRow['CNT'] ?? 0);
+
+    $rows = $dc::getList([
+        'filter' => $filter, 'order' => $orderBy,
+        'limit' => $perPage, 'offset' => ($page - 1) * $perPage,
+    ])->fetchAll();
+
+    $dbRes = new CDBResult();
+    $dbRes->InitFromArray($rows);
+}
 
 $uids = array_values(array_unique(array_column($rows, 'UF_UID')));
 $users = [];
 if ($uids) {
     try {
-        $bdc = \X5\Pwa\Storage::dataClass('X5PwaUidBindings');
+        $bdc = Storage::dataClass('X5PwaUidBindings');
         $brs = $bdc::getList(['select' => ['UF_UID', 'UF_NICKNAME', 'UF_FIO'], 'filter' => ['=UF_UID' => $uids]])->fetchAll();
         foreach ($brs as $b) $users[$b['UF_UID']] = $b;
     } catch (\Throwable $e) {}
 }
-
-$dbRes = new CDBResult();
-$dbRes->InitFromArray($rows);
 
 $rsData = new CAdminUiResult($dbRes, $sTableID);
 $rsData->NavNum         = 1;
@@ -195,8 +249,9 @@ $lAdmin->AddFooter([
 
 $lAdmin->CheckListMode();
 
+// Экспорт: SEARCH (единое поле) → parameters SEARCH
 $exportUrl = 'x5_pwa_rewards_export.php?lang=' . LANGUAGE_ID . '&' . http_build_query(array_filter([
-    'UID' => $uidQuery, 'TYPE' => $type,
+    'SEARCH' => $search, 'TYPE' => $type,
     'LOCAL_DATE_from' => $dateFrom, 'LOCAL_DATE_to' => $dateTo,
     'CREATED_AT_from' => $createdFrom, 'CREATED_AT_to' => $createdTo,
     'by' => $by, 'order' => $order,

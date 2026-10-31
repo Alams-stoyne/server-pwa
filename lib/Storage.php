@@ -1443,5 +1443,237 @@ class Storage
             return 0;
         }
     }
+    /**
+     * Количество участников марафона (consent='Y', theme!='',
+     * not blocked, not test), у которых была хоть какая-то активность
+     * в периоде [from, to].
+     *
+     * В отличие от getActiveUidsForStats() (активные за 24ч),
+     * здесь учитывается весь период марафона.
+     *
+     * Учитываются все виды активности:
+     *   • steps         — любая запись в x5_pwa_steps за период
+     *   • lecture_reads — x5_pwa_lecture_reads.UF_READ_AT
+     *   • task_completions — x5_pwa_task_completions.UF_COMPLETED_AT
+     *   • habit_logs    — x5_pwa_habit_logs.UF_COMPLETED_AT
+     *   • event_actions — UF_CLICKED_AT / UF_CONFIRMED_AT
+     *   • reflections   — x5_pwa_reflections.UF_LOCAL_DATE
+     *   • reward_log    — x5_pwa_reward_log.UF_LOCAL_DATE
+     */
+    public static function countParticipatingInPeriod(string $from, string $to): int
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)
+            || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)
+            || $from > $to) {
+            return 0;
+        }
 
+        $conn      = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $fromDaySafe = $sqlHelper->forSql($from);
+        $toDaySafe   = $sqlHelper->forSql($to);
+        $fromDtSafe  = $sqlHelper->forSql($from . ' 00:00:00');
+        $toDtSafe    = $sqlHelper->forSql($to . ' 23:59:59');
+
+        $sql = "SELECT COUNT(DISTINCT b.UF_UID) AS C
+                FROM x5_pwa_uid_bindings b
+                INNER JOIN (
+                    SELECT UF_UID FROM x5_pwa_steps
+                    WHERE UF_LOCAL_DATE BETWEEN '{$fromDaySafe}' AND '{$toDaySafe}'
+
+                    UNION
+
+                    SELECT UF_UID FROM x5_pwa_lecture_reads
+                    WHERE UF_READ_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+
+                    UNION
+
+                    SELECT UF_UID FROM x5_pwa_task_completions
+                    WHERE UF_COMPLETED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+
+                    UNION
+
+                    SELECT UF_UID FROM x5_pwa_habit_logs
+                    WHERE UF_COMPLETED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+
+                    UNION
+
+                    SELECT UF_UID FROM x5_pwa_event_actions
+                    WHERE (UF_CLICKED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+                        OR UF_CONFIRMED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}')
+
+                    UNION
+
+                    SELECT UF_UID FROM x5_pwa_reflections
+                    WHERE UF_LOCAL_DATE BETWEEN '{$fromDaySafe}' AND '{$toDaySafe}'
+
+                    UNION
+
+                    SELECT UF_UID FROM x5_pwa_reward_log
+                    WHERE UF_LOCAL_DATE BETWEEN '{$fromDaySafe}' AND '{$toDaySafe}'
+                ) a ON a.UF_UID = b.UF_UID
+                WHERE b.UF_CONSENT_GRANTED = 'Y'
+                  AND b.UF_THEME IS NOT NULL AND b.UF_THEME != ''
+                  AND (b.UF_BLOCKED IS NULL OR b.UF_BLOCKED = 'N')
+                  AND (b.UF_IS_TEST IS NULL OR b.UF_IS_TEST != 'Y')";
+
+        try {
+            $row = $conn->query($sql)->fetch();
+            return (int)($row['C'] ?? 0);
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'countParticipatingInPeriod failed: ' . $e->getMessage(),
+                'Storage::countParticipatingInPeriod'
+            );
+            return 0;
+        }
+    }
+
+    /**
+     * Сумма подтверждённых шагов за период [from, to] по ВСЕМ записям
+     * (не только по активным за 24ч). Исключаются только тестовые аккаунты.
+     *
+     * Соответствует TOTAL_STEPS в /steps/leaderboard.json (когда [from,to]
+     * покрывают весь марафон до сегодня): оба используют SUM(UF_STEPS)
+     * WHERE UF_STATUS = 'Y' без фильтра по consent/theme/blocked.
+     */
+    public static function sumStepsConfirmedInPeriod(string $from, string $to): int
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)
+            || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)
+            || $from > $to) {
+            return 0;
+        }
+
+        try {
+            $conn      = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $fromSafe  = $sqlHelper->forSql($from);
+            $toSafe    = $sqlHelper->forSql($to);
+
+            $row = $conn->query(
+                "SELECT COALESCE(SUM(s.UF_STEPS), 0) AS T
+                 FROM x5_pwa_steps s
+                 LEFT JOIN x5_pwa_uid_bindings b ON b.UF_UID = s.UF_UID
+                 WHERE s.UF_STATUS = 'Y'
+                   AND s.UF_LOCAL_DATE BETWEEN '{$fromSafe}' AND '{$toSafe}'
+                   AND (b.UF_IS_TEST IS NULL OR b.UF_IS_TEST != 'Y')"
+            )->fetch();
+
+            return (int)($row['T'] ?? 0);
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'sumStepsConfirmedInPeriod failed: ' . $e->getMessage(),
+                'Storage::sumStepsConfirmedInPeriod'
+            );
+            return 0;
+        }
+    }
+
+    /**
+     * Количество пользователей (bindings), добавленных за указанный день
+     * (по UF_CREATED_AT).
+     */
+    public static function countRegisteredOnDate(string $date): int
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) return 0;
+
+        try {
+            $conn      = Application::getConnection();
+            $sqlHelper = $conn->getSqlHelper();
+            $fromSafe  = $sqlHelper->forSql($date . ' 00:00:00');
+            $toSafe    = $sqlHelper->forSql($date . ' 23:59:59');
+
+            $row = $conn->query(
+                "SELECT COUNT(*) AS C
+                 FROM x5_pwa_uid_bindings
+                 WHERE UF_CREATED_AT BETWEEN '{$fromSafe}' AND '{$toSafe}'"
+            )->fetch();
+
+            return (int)($row['C'] ?? 0);
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'countRegisteredOnDate failed: ' . $e->getMessage(),
+                'Storage::countRegisteredOnDate'
+            );
+            return 0;
+        }
+    }
+    /**
+     * Возвращает массив UF_UID всех участников марафона, у которых
+     * была любая активность в [from, to].
+     *
+     * Отличие от countParticipatingInPeriod(): тот же запрос, но возвращает
+     * массив — используется как база для ВСЕХ «периодных» метрик buildGlobal(),
+     * чтобы они считались по всем участникам периода, а не только по
+     * активным за 24 часа.
+     *
+     * @return string[]
+     */
+    public static function getParticipatingUidsInPeriod(string $from, string $to, int $limit = 50000): array
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)
+            || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)
+            || $from > $to) {
+            return [];
+        }
+
+        $conn      = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $fromDaySafe = $sqlHelper->forSql($from);
+        $toDaySafe   = $sqlHelper->forSql($to);
+        $fromDtSafe  = $sqlHelper->forSql($from . ' 00:00:00');
+        $toDtSafe    = $sqlHelper->forSql($to . ' 23:59:59');
+
+        $sql = "SELECT DISTINCT b.UF_UID
+                FROM x5_pwa_uid_bindings b
+                INNER JOIN (
+                    SELECT UF_UID FROM x5_pwa_steps
+                    WHERE UF_LOCAL_DATE BETWEEN '{$fromDaySafe}' AND '{$toDaySafe}'
+                    UNION
+                    SELECT UF_UID FROM x5_pwa_lecture_reads
+                    WHERE UF_READ_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+                    UNION
+                    SELECT UF_UID FROM x5_pwa_task_completions
+                    WHERE UF_COMPLETED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+                    UNION
+                    SELECT UF_UID FROM x5_pwa_habit_logs
+                    WHERE UF_COMPLETED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+                    UNION
+                    SELECT UF_UID FROM x5_pwa_event_actions
+                    WHERE (UF_CLICKED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}'
+                        OR UF_CONFIRMED_AT BETWEEN '{$fromDtSafe}' AND '{$toDtSafe}')
+                    UNION
+                    SELECT UF_UID FROM x5_pwa_reflections
+                    WHERE UF_LOCAL_DATE BETWEEN '{$fromDaySafe}' AND '{$toDaySafe}'
+                    UNION
+                    SELECT UF_UID FROM x5_pwa_reward_log
+                    WHERE UF_LOCAL_DATE BETWEEN '{$fromDaySafe}' AND '{$toDaySafe}'
+                ) a ON a.UF_UID = b.UF_UID
+                WHERE b.UF_CONSENT_GRANTED = 'Y'
+                AND b.UF_THEME IS NOT NULL AND b.UF_THEME != ''
+                AND (b.UF_BLOCKED IS NULL OR b.UF_BLOCKED = 'N')
+                AND (b.UF_IS_TEST IS NULL OR b.UF_IS_TEST != 'Y')
+                LIMIT " . (int)$limit;
+
+        try {
+            $rows = $conn->query($sql)->fetchAll();
+            $uids = array_map(fn($r) => (string)$r['UF_UID'], $rows);
+
+            if (count($uids) >= $limit) {
+                Settings::log(
+                    'getParticipatingUidsInPeriod truncated at ' . $limit
+                    . ' period=' . $from . '..' . $to,
+                    'Storage::getParticipatingUidsInPeriod'
+                );
+            }
+            return $uids;
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'getParticipatingUidsInPeriod failed: ' . $e->getMessage(),
+                'Storage::getParticipatingUidsInPeriod'
+            );
+            return [];
+        }
+    }
 }

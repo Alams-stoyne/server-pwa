@@ -681,24 +681,127 @@ class StepsBuilder
         ];
     }
     
+    /**
+     * Резолвит UID'ы из x5_pwa_uid_bindings по подстроке (как в users.php):
+     * UF_UID / UF_FIO / UF_NICKNAME / UF_WORKPLACE.
+     *
+     * Возвращает:
+     *   • [] — если ничего не найдено (тогда фильтр по шагам вернёт пустой список);
+     *   • array<string> — список UID'ов (ограничен $limit).
+     *
+     * Один SQL — быстрее, чем HL getList с LOGIC=OR.
+     */
+    private static function resolveUidsBySearch(string $query, int $limit = 5000): array
+    {
+        $query = trim($query);
+        if ($query === '') return [];
+
+        $conn      = Application::getConnection();
+        $sqlHelper = $conn->getSqlHelper();
+        $like      = "'%" . $sqlHelper->forSql($query) . "%'";
+
+        try {
+            $rows = $conn->query(
+                "SELECT UF_UID
+                FROM x5_pwa_uid_bindings
+                WHERE UF_UID LIKE {$like}
+                    OR UF_FIO LIKE {$like}
+                    OR UF_NICKNAME LIKE {$like}
+                    OR UF_WORKPLACE LIKE {$like}
+                LIMIT " . (int)$limit
+            )->fetchAll();
+
+            $uids = array_map(fn($r) => (string)$r['UF_UID'], $rows);
+
+            if (count($uids) >= $limit) {
+                Settings::log(
+                    'resolveUidsBySearch truncated at ' . $limit
+                    . ' query="' . mb_substr($query, 0, 60) . '"',
+                    'StepsBuilder::resolveUidsBySearch'
+                );
+            }
+
+            return $uids;
+        } catch (\Throwable $e) {
+            Settings::logError(
+                'resolveUidsBySearch failed query="' . mb_substr($query, 0, 60)
+                . '": ' . $e->getMessage(),
+                'StepsBuilder::resolveUidsBySearch'
+            );
+            return [];
+        }
+    }
+
     public static function listForAdmin(array $params = []): array
     {
-        $dc = Storage::dataClass('X5PwaSteps'); $filter = [];
-        if (!empty($params['uid'])) $filter['%UF_UID'] = '%' . $params['uid'] . '%';
-        $status = (string)($params['status'] ?? ''); if (in_array($status, ['N', 'Y', 'R'], true)) $filter['=UF_STATUS'] = $status;
+        $dc = Storage::dataClass('X5PwaSteps');
+
+        // ─── Поиск по UID/ФИО/нику/компании (как в users.php) ───
+        $searchRaw = trim((string)($params['search'] ?? ''));
+        $uidRaw    = trim((string)($params['uid']    ?? '')); // legacy-параметр
+
+        $lookupQuery = $uidRaw !== '' ? $uidRaw : $searchRaw;
+
+        $resolvedUids = null; // null = фильтр по UID не задан
+        if ($lookupQuery !== '') {
+            $resolvedUids = self::resolveUidsBySearch($lookupQuery);
+
+            // Если ничего не найдено — возвращаем пустой результат СРАЗУ,
+            // чтобы не тянуть всю таблицу шагов (иначе пользователь увидит
+            // все записи, что вводит в заблуждение).
+            if (empty($resolvedUids)) {
+                return [
+                    'rows'    => [],
+                    'total'   => 0,
+                    'page'    => 1,
+                    'perPage' => 50,
+                    'pages'   => 1,
+                ];
+            }
+        }
+
+        $filter = [];
+        if ($resolvedUids !== null) {
+            $filter['=UF_UID'] = $resolvedUids;
+        }
+
+        $status = (string)($params['status'] ?? '');
+        if (in_array($status, ['N', 'Y', 'R'], true)) $filter['=UF_STATUS'] = $status;
+
         if (!empty($params['date_from'])) $filter['>=UF_LOCAL_DATE'] = (string)$params['date_from'];
-        if (!empty($params['date_to'])) $filter['<=UF_LOCAL_DATE'] = (string)$params['date_to'];
+        if (!empty($params['date_to']))   $filter['<=UF_LOCAL_DATE'] = (string)$params['date_to'];
 
         $sortMap = ['ID' => 'ID', 'UF_SENT_AT' => 'UF_SENT_AT', 'UF_LOCAL_DATE' => 'UF_LOCAL_DATE', 'UF_UID' => 'UF_UID', 'UF_STEPS' => 'UF_STEPS', 'UF_STATUS' => 'UF_STATUS'];
-        $sortKey = $sortMap[$params['sort'] ?? 'UF_SENT_AT'] ?? 'UF_SENT_AT'; $sortDir = strtoupper((string)($params['sortDir'] ?? 'DESC')) === 'ASC' ? 'ASC' : 'DESC'; $order = [$sortKey => $sortDir, 'ID' => 'DESC'];
+        $sortKey = $sortMap[$params['sort'] ?? 'UF_SENT_AT'] ?? 'UF_SENT_AT';
+        $sortDir = strtoupper((string)($params['sortDir'] ?? 'DESC')) === 'ASC' ? 'ASC' : 'DESC';
+        $order = [$sortKey => $sortDir, 'ID' => 'DESC'];
 
-        $noPaging = !empty($params['noPaging']) || (int)($params['perPage'] ?? -1) === 0; $page = max(1, (int)($params['page'] ?? 1)); $perPage = $noPaging ? 0 : max(1, min(200, (int)($params['perPage'] ?? 50))); $offset = $noPaging ? 0 : ($page - 1) * $perPage;
+        $noPaging = !empty($params['noPaging']) || (int)($params['perPage'] ?? -1) === 0;
+        $page = max(1, (int)($params['page'] ?? 1));
+        $perPage = $noPaging ? 0 : max(1, min(200, (int)($params['perPage'] ?? 50)));
+        $offset = $noPaging ? 0 : ($page - 1) * $perPage;
 
-        $totalRow = $dc::getList(['select' => ['CNT'], 'filter' => $filter, 'runtime' => [new \Bitrix\Main\Entity\ExpressionField('CNT', 'COUNT(*)')]])->fetch(); $total = (int)($totalRow['CNT'] ?? 0);
-        $qParams = ['filter' => $filter, 'order' => $order]; if (!$noPaging) { $qParams['limit'] = $perPage; $qParams['offset'] = $offset; }
+        $totalRow = $dc::getList([
+            'select' => ['CNT'],
+            'filter' => $filter,
+            'runtime' => [new \Bitrix\Main\Entity\ExpressionField('CNT', 'COUNT(*)')],
+        ])->fetch();
+        $total = (int)($totalRow['CNT'] ?? 0);
+
+        $qParams = ['filter' => $filter, 'order' => $order];
+        if (!$noPaging) {
+            $qParams['limit'] = $perPage;
+            $qParams['offset'] = $offset;
+        }
         $rows = $dc::getList($qParams)->fetchAll();
 
-        return ['rows' => $rows, 'total' => $total, 'page' => $page, 'perPage' => $perPage, 'pages' => $noPaging ? 1 : ($total > 0 ? (int)ceil($total / $perPage) : 1)];
+        return [
+            'rows' => $rows,
+            'total' => $total,
+            'page' => $page,
+            'perPage' => $perPage,
+            'pages' => $noPaging ? 1 : ($total > 0 ? (int)ceil($total / $perPage) : 1),
+        ];
     }
 
     public static function setStatus(int $id, string $status, int $adminId, string $reason = ''): bool

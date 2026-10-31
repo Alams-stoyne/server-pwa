@@ -379,17 +379,7 @@ class StatsBuilder
         [$from, $to] = self::getEffectivePeriod();
         $today = date('Y-m-d');
 
-        // ── Общие счётчики по всем bindings (без фильтра активности).
-        //    TOTAL_REGISTERED   — всего записей в bindings (устройств/аккаунтов),
-        //                         включая без согласия / без темы / заблокированных.
-        //    TOTAL_PARTICIPANTS — реально в марафоне: consent = 'Y' + theme != '',
-        //                         не заблокированы, не тестовые.
-        //    TOTAL_USERS (ниже) — «активны сегодня»: подмножество PARTICIPANTS,
-        //                         у кого была активность за 24 часа
-        //                         (см. Storage::getActiveUidsForStats()).
-        //
-        //    Инвариант: REGISTERED >= PARTICIPANTS >= USERS.
-        //    Если PARTICIPANTS < USERS — что-то сломалось, пишем в лог.
+        // ── Общие счётчики по всей базе ──
         $totalRegistered   = 0;
         $totalParticipants = 0;
         try {
@@ -412,37 +402,53 @@ class StatsBuilder
             );
         }
 
+        // ── ЕДИНАЯ БАЗА: все участники марафона с активностью в [from, to] ──
+        $participatingUids  = Storage::getParticipatingUidsInPeriod($from, $to);
+        $totalUsersInPeriod = count($participatingUids);
+
+        // ── TOTAL_DAY_ADD_USERS: новые пользователи за сегодня ──
+        $totalDayAddUsers = Storage::countRegisteredOnDate($today);
+
+        // ── Статистика по единой базе ──
+        // periodStats — за весь период [from, to]  → *_TOTAL
+        // dayStats    — за сегодня [today, today]  → *_DAY
+        $periodStats = Storage::getPeriodStatsForUids($participatingUids, $from, $to);
+        $dayStats    = Storage::getPeriodStatsForUids($participatingUids, $today, $today);
+
+        // Агрегатор по компаниям (period + day)
         $wpMap = WorkplacesBuilder::getMap();
         $wpAgg = [];
         foreach ($wpMap as $code => $_) {
             $wpAgg[$code] = [
                 'users' => 0, 'apples' => 0,
-                'earned' => 0, 'max' => 0,
-                'earned_day' => 0, 'max_day' => 0,
+                'earned' => 0, 'max' => 0, 'earned_day' => 0, 'max_day' => 0,
                 'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
                 'events_v' => 0, 'events_c' => 0,
+                'lectures_day' => 0, 'tasks_day' => 0, 'habits_day' => 0, 'steps_day' => 0,
+                'events_v_day' => 0, 'events_c_day' => 0,
             ];
         }
 
-        $uids     = Storage::getActiveUidsForStats();
-        $bindings = Storage::getBindingsForStats($uids);
-        $periodStats = Storage::getPeriodStatsForUids($uids, $from, $to);
+        $totalApples = 0;
+        $totalUsers  = 0;
 
-        $totalApples     = 0;
-        $totalUsers      = 0;
-        $stepsConfirmedTotal = 0;
-
-        $lecturesPeriod = 0;
-        $tasksPeriod    = 0;
-        $habitsPeriod   = 0;
-        $stepsPeriod    = 0;
+        // ── TOTAL (за весь период) ──
+        $lecturesPeriod        = 0;
+        $tasksPeriod           = 0;
+        $habitsPeriod          = 0;
+        $stepsPeriod           = 0;
         $eventsVisitedPeriod   = 0;
         $eventsConfirmedPeriod = 0;
 
-        $lecturesTotal = 0;
-        $tasksTotal    = 0;
-        $habitsTotal   = 0;
+        // ── DAY (за сегодня) ──
+        $lecturesDay        = 0;
+        $tasksDay           = 0;
+        $habitsDay          = 0;
+        $stepsDay           = 0;
+        $eventsVisitedDay   = 0;
+        $eventsConfirmedDay = 0;
 
+        // ── Эффективность ──
         $totalEarned    = 0;
         $totalMax       = 0;
         $totalEarnedDay = 0;
@@ -459,6 +465,8 @@ class StatsBuilder
 
         $todayApples = self::getDailyApples($today, $applesCache);
 
+        $bindings = Storage::getBindingsForStats($participatingUids);
+
         foreach ($bindings as $uid => $b) {
             if ($b['blocked']) continue;
             if (!$b['consent']) continue;
@@ -468,7 +476,6 @@ class StatsBuilder
 
             $totalUsers++;
             $totalApples += (int)$b['reward_balance'];
-            $stepsConfirmedTotal += (int)$b['total_steps'];
 
             [$userFrom, $userTo] = self::getUserPeriod($b['created_ts'], $from, $to);
 
@@ -482,7 +489,11 @@ class StatsBuilder
             $habitId     = (string)($b['habit_id'] ?? '');
             $habitPoints = $habitPointsCache[$habitId] ?? 0;
 
-            $earned   = Storage::getEarnedBetween($uid, $userFrom, $userTo);
+            // ── Награды: за период / за сегодня ──
+            $earned      = Storage::getEarnedBetween($uid, $userFrom, $userTo);
+            $earnedToday = Storage::getEarnedOnDate($uid, $today);
+
+            // ── Потенциал: за период / за сегодня ──
             $maxTotal = self::sumDailyMaxForUser($userFrom, $userTo, $themeCode, $habitPoints, $applesCache);
 
             $dayMax = (int)($todayApples['BASE'] ?? 0);
@@ -490,13 +501,13 @@ class StatsBuilder
                 $dayMax += (int)$todayApples['THEMES'][$themeCode];
             }
             $dayMax += $habitPoints;
-            $earnedToday = Storage::getEarnedOnDate($uid, $today);
 
             $totalEarned    += $earned;
             $totalMax       += $maxTotal;
             $totalEarnedDay += $earnedToday;
             $totalMaxDay    += $dayMax;
 
+            // ── Активности за период ──
             $ps = $periodStats[$uid] ?? [
                 'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
                 'events_visited' => 0, 'events_confirmed' => 0,
@@ -509,35 +520,51 @@ class StatsBuilder
             $eventsVisitedPeriod   += (int)$ps['events_visited'];
             $eventsConfirmedPeriod += (int)$ps['events_confirmed'];
 
+            // ── Активности за сегодня ──
+            $ds = $dayStats[$uid] ?? [
+                'lectures' => 0, 'tasks' => 0, 'habits' => 0, 'steps' => 0,
+                'events_visited' => 0, 'events_confirmed' => 0,
+            ];
+
+            $lecturesDay        += (int)$ds['lectures'];
+            $tasksDay           += (int)$ds['tasks'];
+            $habitsDay          += (int)$ds['habits'];
+            $stepsDay           += (int)$ds['steps'];
+            $eventsVisitedDay   += (int)$ds['events_visited'];
+            $eventsConfirmedDay += (int)$ds['events_confirmed'];
+
+            // ── Агрегация по компаниям ──
             if ($wp !== '' && isset($wpAgg[$wp])) {
                 $wpAgg[$wp]['earned']     += $earned;
                 $wpAgg[$wp]['max']        += $maxTotal;
                 $wpAgg[$wp]['earned_day'] += $earnedToday;
                 $wpAgg[$wp]['max_day']    += $dayMax;
-                $wpAgg[$wp]['lectures']   += (int)$ps['lectures'];
-                $wpAgg[$wp]['tasks']      += (int)$ps['tasks'];
-                $wpAgg[$wp]['habits']     += (int)$ps['habits'];
-                $wpAgg[$wp]['steps']      += (int)$ps['steps'];
-                $wpAgg[$wp]['events_v']   += (int)$ps['events_visited'];
-                $wpAgg[$wp]['events_c']   += (int)$ps['events_confirmed'];
+
+                $wpAgg[$wp]['lectures']    += (int)$ps['lectures'];
+                $wpAgg[$wp]['tasks']       += (int)$ps['tasks'];
+                $wpAgg[$wp]['habits']      += (int)$ps['habits'];
+                $wpAgg[$wp]['steps']       += (int)$ps['steps'];
+                $wpAgg[$wp]['events_v']    += (int)$ps['events_visited'];
+                $wpAgg[$wp]['events_c']    += (int)$ps['events_confirmed'];
+
+                $wpAgg[$wp]['lectures_day']    += (int)$ds['lectures'];
+                $wpAgg[$wp]['tasks_day']       += (int)$ds['tasks'];
+                $wpAgg[$wp]['habits_day']      += (int)$ds['habits'];
+                $wpAgg[$wp]['steps_day']       += (int)$ds['steps'];
+                $wpAgg[$wp]['events_v_day']    += (int)$ds['events_visited'];
+                $wpAgg[$wp]['events_c_day']    += (int)$ds['events_confirmed'];
             }
         }
 
-        // Sanity: все активные сегодня должны быть среди участников.
-        if ($totalParticipants > 0 && $totalUsers > $totalParticipants) {
+        // Sanity: getBindingsForStats() должен вернуть запись на каждый UID.
+        if ($totalUsers !== $totalUsersInPeriod) {
             Settings::logError(
-                "buildGlobal: SANITY WARN totalUsers={$totalUsers} > totalParticipants={$totalParticipants}",
+                "buildGlobal: count mismatch uids={$totalUsersInPeriod} bindings={$totalUsers}",
                 'StatsBuilder::buildGlobal'
             );
         }
 
-        $totalStats = Storage::getStatsForUids($uids);
-        foreach ($totalStats as $ts) {
-            $lecturesTotal += (int)$ts['lectures'];
-            $tasksTotal    += (int)$ts['tasks'];
-            $habitsTotal   += (int)$ts['habits'];
-        }
-
+        // Список компаний
         $list = [];
         foreach ($wpAgg as $code => $agg) {
             if ($agg['users'] <= 0) continue;
@@ -568,12 +595,22 @@ class StatsBuilder
                 'EARNED_DAY'   => (int)$agg['earned_day'],
                 'MAX_DAY'      => (int)$agg['max_day'],
                 'MISSING_DAY'  => max(0, (int)$agg['max_day'] - (int)$agg['earned_day']),
-                'LECTURES'     => (int)$agg['lectures'],
-                'TASKS'        => (int)$agg['tasks'],
-                'HABITS'       => (int)$agg['habits'],
-                'STEPS'        => (int)$agg['steps'],
+
+                // TOTAL (за период)
+                'LECTURES'         => (int)$agg['lectures'],
+                'TASKS'            => (int)$agg['tasks'],
+                'HABITS'           => (int)$agg['habits'],
+                'STEPS'            => (int)$agg['steps'],
                 'EVENTS_VISITED'   => (int)$agg['events_v'],
                 'EVENTS_CONFIRMED' => (int)$agg['events_c'],
+
+                // DAY (за сегодня)
+                'LECTURES_DAY'         => (int)$agg['lectures_day'],
+                'TASKS_DAY'            => (int)$agg['tasks_day'],
+                'HABITS_DAY'           => (int)$agg['habits_day'],
+                'STEPS_DAY'            => (int)$agg['steps_day'],
+                'EVENTS_VISITED_DAY'   => (int)$agg['events_v_day'],
+                'EVENTS_CONFIRMED_DAY' => (int)$agg['events_c_day'],
             ];
         }
         usort($list, fn($a, $b) => $b['PERCENT'] <=> $a['PERCENT']);
@@ -591,6 +628,29 @@ class StatsBuilder
         return [
             'RESULT'          => 'OK',
             'GLOBAL_PROGRESS' => [
+                // ── Метрики шапки ──
+                'TOTAL_REGISTERED'      => $totalRegistered,
+                'TOTAL_PARTICIPANTS'    => $totalParticipants,
+                'TOTAL_USERS'           => $totalUsersInPeriod,
+                'TOTAL_DAY_ADD_USERS'   => $totalDayAddUsers,
+
+                // ── TOTAL: за весь период [from, to] (база = TOTAL_USERS) ──
+                'LECTURES_READ_TOTAL'      => $lecturesPeriod,
+                'TASKS_DONE_TOTAL'         => $tasksPeriod,
+                'HABITS_DAYS_TOTAL'        => $habitsPeriod,
+                'STEPS_CONFIRMED_TOTAL'    => $stepsPeriod,
+                'EVENTS_VISITED_TOTAL'     => $eventsVisitedPeriod,
+                'EVENTS_CONFIRMED_TOTAL'   => $eventsConfirmedPeriod,
+
+                // ── DAY: за сегодня (база = TOTAL_USERS) ──
+                'LECTURES_READ_DAY'        => $lecturesDay,
+                'TASKS_DONE_DAY'           => $tasksDay,
+                'HABITS_DAYS_DAY'          => $habitsDay,
+                'STEPS_CONFIRMED_DAY'      => $stepsDay,
+                'EVENTS_VISITED_DAY'       => $eventsVisitedDay,
+                'EVENTS_CONFIRMED_DAY'     => $eventsConfirmedDay,
+
+                // ── Alias для обратной совместимости (= *_TOTAL) ──
                 'LECTURES_READ'    => $lecturesPeriod,
                 'TASKS_DONE'       => $tasksPeriod,
                 'HABITS_DAYS'      => $habitsPeriod,
@@ -598,31 +658,25 @@ class StatsBuilder
                 'EVENTS_VISITED'   => $eventsVisitedPeriod,
                 'EVENTS_CONFIRMED' => $eventsConfirmedPeriod,
 
-                'LECTURES_READ_TOTAL'   => $lecturesTotal,
-                'TASKS_DONE_TOTAL'      => $tasksTotal,
-                'HABITS_DAYS_TOTAL'     => $habitsTotal,
-                'STEPS_CONFIRMED_TOTAL' => $stepsConfirmedTotal,
+                // ── Яблоки ──
+                // TOTAL_APPLES — снимок баланса (за всё время, включая pre-period)
+                // EARNED_TOTAL — заработано за период
+                // EARNED_DAY_TOTAL — заработано за сегодня
+                'TOTAL_APPLES'      => $totalApples,
+                'APPLES_TOTAL'      => $totalApples,      // alias
+                'EARNED_TOTAL'      => $totalEarned,
+                'EARNED_DAY_TOTAL'  => $totalEarnedDay,
+                'APPLES_DAY'        => $totalEarnedDay,   // alias
 
-                'TOTAL_APPLES'    => $totalApples,
-
-                // ── Метрики шапки админки ──
-                // TOTAL_REGISTERED   — все записи в bindings (охват).
-                // TOTAL_PARTICIPANTS — участники марафона (consent + theme, без блока/теста).
-                // TOTAL_USERS        — активны сегодня (подмножество PARTICIPANTS).
-                'TOTAL_REGISTERED'   => $totalRegistered,
-                'TOTAL_PARTICIPANTS' => $totalParticipants,
-                'TOTAL_USERS'        => $totalUsers,
-
-                'EARNED_TOTAL'    => $totalEarned,
-                'MAX_TOTAL'       => $totalMax,
-                'MISSING_TOTAL'   => $totalMissing,
-                'AVG_EFFICIENCY'  => $avgEfficiency,
-
-                'EARNED_DAY_TOTAL'    => $totalEarnedDay,
+                // ── Эффективность ──
+                'MAX_TOTAL'           => $totalMax,
+                'MISSING_TOTAL'       => $totalMissing,
+                'AVG_EFFICIENCY'      => $avgEfficiency,
                 'MAX_DAY_TOTAL'       => $totalMaxDay,
                 'MISSING_DAY_TOTAL'   => $totalMissingDay,
                 'AVG_EFFICIENCY_DAY'  => $avgEfficiencyDay,
-                'TODAY'               => $today,
+
+                'TODAY' => $today,
             ],
             'COMPANIES'       => ['LIST' => $list],
             'PERIOD'          => ['FROM' => $from, 'TO' => $to],
